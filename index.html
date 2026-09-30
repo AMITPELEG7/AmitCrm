@@ -64,10 +64,15 @@
     display: flex; flex-direction: column; max-height: 100%;
   }
   .col.over { border-color: var(--accent); background: var(--accent-soft); }
-  .col-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 6px; }
+  .col-head { position: relative; display: flex; align-items: center; gap: 8px; padding: 10px 12px 6px; }
   .col-title { margin: 0; font-size: 15px; font-weight: 600; flex: 1; overflow-wrap: anywhere; }
   .count { color: var(--muted); font-size: 13px; }
-  .tools { display: flex; gap: 2px; opacity: 0; transition: opacity .1s; }
+  /* Overlaid on the header instead of taking room from it, so long status names keep the full width. */
+  .tools {
+    position: absolute; inset-inline-end: 6px; top: 50%; transform: translateY(-50%);
+    display: flex; gap: 2px; padding: 2px 4px; border-radius: 8px; background: var(--bg);
+    opacity: 0; transition: opacity .1s;
+  }
   .col-head:hover .tools, .col-head:focus-within .tools,
   .card:hover .tools, .card:focus-within .tools { opacity: 1; }
   button.icon {
@@ -185,6 +190,12 @@
   @media (max-width: 560px) { .fields.three { grid-template-columns: 1fr; } }
 
   /* ---------- automation dialog + toast ---------- */
+  #autoDialog { width: min(560px, 94vw); max-height: 92vh; overflow: auto; }
+  #autoDialog h4 { margin: 14px 0 4px; font-size: 14px; }
+  #followInfo { margin: -4px 0 12px; }
+  .auto-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .auto-row > span { flex: 1; overflow-wrap: anywhere; }
+  .auto-row select { flex: 1.4; min-width: 0; }
   .check { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; cursor: pointer; }
   .check input { width: auto; margin: 4px 0 0; }
   #autoTarget { width: 100%; margin-bottom: 10px; }
@@ -290,6 +301,10 @@
         <div class="field-head"><label for="fFollow">מועד מעקב הבא</label></div>
         <input id="fFollow" type="date">
       </div>
+      <div class="field">
+        <div class="field-head"><label for="fFollowTime">שעת מעקב (לא חובה)</label></div>
+        <input id="fFollowTime" type="time">
+      </div>
     </div>
 
     <section id="meetingSection" class="meeting" hidden>
@@ -343,9 +358,34 @@
   </form>
 </dialog>
 
+<dialog id="followDialog">
+  <form id="followForm" autocomplete="off">
+    <h3 id="followTitle"></h3>
+    <p id="followInfo" class="hint"></p>
+    <div class="fields">
+      <div class="field">
+        <div class="field-head"><label for="fuDate">מועד מעקב הבא <span class="req">*</span></label></div>
+        <input id="fuDate" type="date" required>
+      </div>
+      <div class="field">
+        <div class="field-head"><label for="fuTime">שעה <span class="req">*</span></label></div>
+        <input id="fuTime" type="time" required>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="followOk" class="primary"></button>
+      <button id="followCancel" type="button">ביטול</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="autoDialog">
   <form id="autoForm">
     <h3 id="autoTitle"></h3>
+    <h4>בכניסה לסטטוס</h4>
+    <p class="hint">כשמגררים ליד לסטטוס, נפתח חלון לפני שהוא עובר. ביטול משאיר אותו במקומו.</p>
+    <div id="autoStatuses"></div>
+    <h4>כשליד נסגר</h4>
     <label class="check"><input type="checkbox" id="autoOn"><span>כשליד נסגר בפייפ-ליין הזה: פתח חלון תיאום פגישה והעבר את הליד לפייפ-ליין:</span></label>
     <select id="autoTarget" aria-label="פייפ-ליין יעד"></select>
     <p class="hint">הליד עובר לסטטוס הראשון בפייפ-ליין שנבחר. "נכשל" לא מושפע.</p>
@@ -409,17 +449,25 @@ const iconBtn = (glyph, label, onclick, disabled = false) =>
 /* ================= data model ================= */
 // state = { version, activePipelineId, pipelines: [{ id, name, statuses: [{id, name}], leads: [Lead] }] }
 // Lead = { id, name*, phone*, email, company, category, website,
-//          nextFollowUp: 'YYYY-MM-DD' | '', notes: [{ id, text, at }],
+//          nextFollowUp: 'YYYY-MM-DD' | '', nextFollowUpTime: 'HH:MM' | '', notes: [{ id, text, at }],
 //          statusId, outcome: null | 'failed' | 'closed', createdAt }      (* = required)
 //          meeting: null | { date: 'YYYY-MM-DD', time: 'HH:MM', endTime: 'HH:MM' | '' (empty = 30 min), location, guests: [email] }
 // Pipeline.onClose: undefined (never set up) | null (switched off) | { action: 'meeting', targetPipelineId }
 //   -> dropping a lead on "נסגר" opens the meeting dialog and, on confirm, moves the lead to the target pipeline's first status.
+// Status.onEnter: undefined (never set up) | null (switched off) | { action: 'meeting' | 'followup' }
+//   -> dragging a lead into that status opens the action's popup first; the lead only moves once it is confirmed.
 // "Last contact" is not stored: it is the timestamp of the newest note.
 // A lead with an outcome is off the board but keeps its last statusId, so "return to board" restores it.
 const DEFAULT_STATUSES = ['חדש', 'בקשר', 'פגישה', 'הצעת מחיר'];
 // Pipelines with these exact names are wired together automatically the first time they are seen (see autoWireMeetings).
 const MEETING_PIPELINE = 'תיאום פגישות', SALES_PIPELINE = 'מכירות';
 const DEFAULT_MEETING_MIN = 30;
+// Status rules set up automatically, by pipeline and status name, wherever the status was never configured.
+const STATUS_RULES = [
+  { pipeline: 'תיאום פגישות', status: 'חזרה ללקוח', action: 'followup' },
+  { pipeline: 'מכירות', status: 'תואמה פגישה', action: 'meeting' },
+];
+const RULE_ACTIONS = { meeting: 'פתח פרטי פגישה', followup: 'דרוש מועד מעקב הבא (תאריך ושעה)' };
 
 function newPipeline(name) {
   return { id: uid(), name, statuses: DEFAULT_STATUSES.map(n => ({ id: uid(), name: n })), leads: [] };
@@ -443,10 +491,21 @@ function autoWireMeetings(pipelines) {
   const sales = pipelines.find(p => p.name.trim() === SALES_PIPELINE);
   if (sched && sales && sched.onClose === undefined) sched.onClose = { action: 'meeting', targetPipelineId: sales.id };
 }
+function autoWireStatusRules(pipelines) {
+  for (const rule of STATUS_RULES) {
+    const p = pipelines.find(x => x.name.trim() === rule.pipeline);
+    const s = p && p.statuses.find(x => x.name.trim() === rule.status);
+    if (s && s.onEnter === undefined) s.onEnter = { action: rule.action };
+  }
+}
+const autoWire = pipelines => { autoWireMeetings(pipelines); autoWireStatusRules(pipelines); };
 // Spreads keep unknown fields, so data written by a newer version is not dropped on save.
 function normalize(d) {
   const pipelines = d.pipelines.map(p => {
-    const statuses = (p.statuses || []).map(s => ({ ...s, id: s.id || uid(), name: String(s.name ?? '') }));
+    const statuses = (p.statuses || []).map(s => ({
+      ...s, id: s.id || uid(), name: String(s.name ?? ''),
+      onEnter: s.onEnter === undefined ? undefined : (s.onEnter && RULE_ACTIONS[s.onEnter.action] ? { action: s.onEnter.action } : null),
+    }));
     if (!statuses.length) statuses.push({ id: uid(), name: DEFAULT_STATUSES[0] });
     const ids = new Set(statuses.map(s => s.id));
     const leads = (p.leads || []).map(l => ({
@@ -454,6 +513,7 @@ function normalize(d) {
       phone: String(l.phone ?? ''), email: String(l.email ?? ''), company: String(l.company ?? ''),
       category: String(l.category ?? ''), website: String(l.website ?? ''),
       nextFollowUp: /^\d{4}-\d{2}-\d{2}$/.test(l.nextFollowUp) ? l.nextFollowUp : '',
+      nextFollowUpTime: /^\d{4}-\d{2}-\d{2}$/.test(l.nextFollowUp) && /^\d{2}:\d{2}$/.test(l.nextFollowUpTime) ? l.nextFollowUpTime : '',
       notes: (Array.isArray(l.notes) ? l.notes : [])
         .filter(n => n && typeof n.text === 'string')
         .map(n => ({ ...n, id: n.id || uid(), at: Number(n.at) || Date.now() })),
@@ -466,7 +526,7 @@ function normalize(d) {
       : (p.onClose && typeof p.onClose.targetPipelineId === 'string' ? { action: 'meeting', targetPipelineId: p.onClose.targetPipelineId } : null);
     return { ...p, id: p.id || uid(), name: String(p.name || 'ללא שם'), statuses, leads, onClose };
   });
-  autoWireMeetings(pipelines);
+  autoWire(pipelines);
   const active = pipelines.some(p => p.id === d.activePipelineId) ? d.activePipelineId : (pipelines[0]?.id ?? null);
   return { ...d, version: 1, activePipelineId: active, pipelines };
 }
@@ -493,9 +553,10 @@ const lastContactAt = lead => lead.notes.length ? Math.max(...lead.notes.map(n =
 function followUpInfo(lead) {
   if (!lead.nextFollowUp) return null;
   const t = todayIso();
-  if (lead.nextFollowUp < t) return { cls: 'overdue', text: `מעקב: ${fmtIso(lead.nextFollowUp)} (באיחור)` };
-  if (lead.nextFollowUp === t) return { cls: 'today', text: 'מעקב: היום' };
-  return { cls: '', text: `מעקב: ${fmtIso(lead.nextFollowUp)}` };
+  const time = lead.nextFollowUpTime ? ` ${lead.nextFollowUpTime}` : '';
+  if (lead.nextFollowUp < t) return { cls: 'overdue', text: `מעקב: ${fmtIso(lead.nextFollowUp)}${time} (באיחור)` };
+  if (lead.nextFollowUp === t) return { cls: 'today', text: `מעקב: היום${time}` };
+  return { cls: '', text: `מעקב: ${fmtIso(lead.nextFollowUp)}${time}` };
 }
 // Only http(s) links are ever made clickable; anything else (e.g. "javascript:...") stays plain text.
 function safeUrl(raw) {
@@ -732,7 +793,7 @@ async function addPipeline() {
   const p = newPipeline(name);
   state.pipelines.push(p);
   state.activePipelineId = p.id;
-  autoWireMeetings(state.pipelines);
+  autoWire(state.pipelines);
   commit();
 }
 async function renamePipeline() {
@@ -741,7 +802,7 @@ async function renamePipeline() {
   const name = await askText('שינוי שם פייפ-ליין', p.name);
   if (!name) return;
   p.name = name;
-  autoWireMeetings(state.pipelines);
+  autoWire(state.pipelines);
   commit();
 }
 async function deletePipeline() {
@@ -760,12 +821,14 @@ async function addStatus() {
   const name = await askText('סטטוס חדש', '', 'שם הסטטוס');
   if (!p || !name) return;
   p.statuses.push({ id: uid(), name });
+  autoWire(state.pipelines);
   commit();
 }
 async function renameStatus(s) {
   const name = await askText('שינוי שם סטטוס', s.name);
   if (!name) return;
   s.name = name;
+  autoWire(state.pipelines);
   commit();
 }
 function moveStatus(s, delta) {
@@ -796,19 +859,29 @@ async function deleteLead(l) {
 
 /* ---- lead dialog: create + edit ---- */
 let editingId = null; // null while creating a new lead
-let meetingMode = false; // true while a lead is being closed in a pipeline that has the meeting automation
+let meetingMode = false; // true while the lead dialog is a pending move that needs meeting details before it happens
+let pendingMove = null;  // { kind: 'close', target } (dropped on "נסגר") or { kind: 'status', statusId, beforeId } (dragged into a status)
 const currentLead = () => (editingId ? activePipeline()?.leads.find(l => l.id === editingId) : null) || null;
 
 function openLead(id, opts = {}) {
   // Already open (e.g. a second click arriving right after a drop, or a double-click): leave what the user is editing alone.
-  if ($('#leadDialog').open) return;
+  if ($('#leadDialog').open || $('#followDialog').open) return;
   const p = activePipeline();
   if (!p) return;
   const lead = id ? p.leads.find(l => l.id === id) : null;
   if (id && !lead) return;
   editingId = lead ? lead.id : null;
-  const auto = lead && opts.meeting ? closeAutomation(p) : null;
-  meetingMode = !!auto;
+  // A pending move (opts.transition) makes this the meeting popup; the lead only moves when it is confirmed.
+  pendingMove = null;
+  const tr = lead && opts.transition;
+  if (tr && tr.kind === 'close') {
+    const auto = closeAutomation(p);
+    if (auto) pendingMove = { kind: 'close', target: auto.target, label: `"${auto.target.name}" ‹ ${auto.target.statuses[0].name}`, short: `"${auto.target.name}"` };
+  } else if (tr && tr.kind === 'status') {
+    const st = p.statuses.find(s => s.id === tr.statusId);
+    if (st) pendingMove = { kind: 'status', statusId: st.id, beforeId: tr.beforeId, label: `"${st.name}"`, short: `"${st.name}"` };
+  }
+  meetingMode = !!pendingMove;
   $('#leadTitle').textContent = meetingMode ? `תיאום פגישה: ${lead.name}` : lead ? (lead.name || 'ליד ללא שם') : 'ליד חדש';
   $('#fName').value = lead?.name ?? '';
   $('#fPhone').value = lead?.phone ?? '';
@@ -817,6 +890,7 @@ function openLead(id, opts = {}) {
   $('#fCategory').value = lead?.category ?? '';
   $('#fWebsite').value = lead?.website ?? '';
   $('#fFollow').value = lead?.nextFollowUp ?? '';
+  $('#fFollowTime').value = lead?.nextFollowUpTime ?? '';
   $('#fFirstNote').value = '';
   $('#noteInput').value = '';
   $('#firstNoteWrap').hidden = !!lead;
@@ -833,11 +907,11 @@ function openLead(id, opts = {}) {
   for (const sel of ['#fMDate', '#fMTime']) $(sel).required = showMeeting; // a required field inside a hidden section would block the form
   const note = $('#meetingNote');
   note.hidden = !meetingMode;
-  if (meetingMode) note.textContent = `אחרי האישור הליד עובר ל"${auto.target.name}" ‹ ${auto.target.statuses[0].name}. ביטול משאיר אותו במקומו.`;
+  if (meetingMode) note.textContent = `אחרי האישור הליד עובר ל${pendingMove.label}. ביטול משאיר אותו במקומו.`;
   for (const sel of ['#fMEnd', '#fMGuests']) $(sel).setCustomValidity('');
   updateEndHint();
   $('#leadDelete').hidden = !lead || meetingMode;
-  $('#leadSave').textContent = meetingMode ? `תאם פגישה והעבר ל"${auto.target.name}"` : lead ? 'שמור' : 'צור ליד';
+  $('#leadSave').textContent = meetingMode ? `תאם פגישה והעבר ל${pendingMove.short}` : lead ? 'שמור' : 'צור ליד';
   const cats = new Set(state.pipelines.flatMap(x => x.leads.map(l => l.category)).filter(Boolean));
   $('#categoryList').replaceChildren(...[...cats].sort((a, b) => a.localeCompare(b, 'he')).map(c => h('option', { value: c })));
   updateWebsiteLink();
@@ -907,6 +981,7 @@ function saveLead() {
     name: $('#fName').value.trim(), phone: $('#fPhone').value.trim(), email: $('#fEmail').value.trim(),
     company: $('#fCompany').value.trim(), category: $('#fCategory').value.trim(),
     website: $('#fWebsite').value.trim(), nextFollowUp: $('#fFollow').value,
+    nextFollowUpTime: $('#fFollow').value ? $('#fFollowTime').value : '', // a time without a date means nothing
   };
   // Whitespace-only passes the native "required" check, so blank the field and let the browser flag it.
   for (const [key, id] of [['name', '#fName'], ['phone', '#fPhone']]) {
@@ -928,30 +1003,76 @@ function saveLead() {
     if (first) created.notes.push({ id: uid(), text: first, at: Date.now() });
     p.leads.push(created);
   }
-  // Closing in a pipeline with the meeting automation: the lead leaves it and lands in the target's first status.
-  const auto = meetingMode && lead ? closeAutomation(p) : null;
-  if (auto) {
+  // A pending move happens only now, on confirm. Handing a lead over to another pipeline places it directly,
+  // without running that status's own rule (its meeting details were just collected).
+  const move = meetingMode && lead ? pendingMove : null;
+  if (move && move.kind === 'close') {
     p.leads = p.leads.filter(l => l !== lead);
-    lead.statusId = auto.target.statuses[0].id;
+    lead.statusId = move.target.statuses[0].id;
     lead.outcome = null;
-    auto.target.leads.push(lead);
+    move.target.leads.push(lead);
+  } else if (move && move.kind === 'status') {
+    placeLead(p, lead, move.statusId, move.beforeId);
   }
   $('#leadDialog').close();
   commit();
-  if (auto) {
-    showToast(`הליד "${lead.name}" הועבר ל"${auto.target.name}" ‹ ${auto.target.statuses[0].name}`, `הצג את "${auto.target.name}"`,
-      () => { state.activePipelineId = auto.target.id; commit(); });
+  if (move && move.kind === 'close') {
+    showToast(`הליד "${lead.name}" הועבר ל${move.label}`, `הצג את "${move.target.name}"`,
+      () => { state.activePipelineId = move.target.id; commit(); });
   }
 }
-function moveLead(id, statusId, beforeId) {
-  const p = activePipeline();
-  const lead = p.leads.find(l => l.id === id);
-  if (!lead) return;
+// Puts a lead into a status at a position (before another lead, or last) without saving or redrawing.
+function placeLead(p, lead, statusId, beforeId) {
   p.leads = p.leads.filter(l => l !== lead);
   lead.statusId = statusId;
   lead.outcome = null;
   const idx = beforeId ? p.leads.findIndex(l => l.id === beforeId) : -1;
   if (idx >= 0) p.leads.splice(idx, 0, lead); else p.leads.push(lead);
+}
+function moveLead(id, statusId, beforeId) {
+  const p = activePipeline();
+  const lead = p.leads.find(l => l.id === id);
+  if (!lead) return;
+  placeLead(p, lead, statusId, beforeId);
+  commit();
+}
+// A drag into a status that has a rule opens that rule's popup first. Cancelling leaves the lead where it was.
+// Re-ordering inside the same status never triggers a rule.
+function requestMove(id, statusId, beforeId) {
+  const p = activePipeline();
+  const lead = p.leads.find(l => l.id === id);
+  const status = p.statuses.find(s => s.id === statusId);
+  if (!lead || !status) return;
+  const action = status.onEnter && lead.statusId !== statusId ? status.onEnter.action : null;
+  if (action === 'meeting') { openLead(id, { transition: { kind: 'status', statusId, beforeId } }); return; }
+  if (action === 'followup') { openFollowUp(lead, status, beforeId); return; }
+  moveLead(id, statusId, beforeId);
+}
+
+/* ---- "follow-up required" popup ---- */
+let followPending = null; // { leadId, statusId, beforeId }
+function openFollowUp(lead, status, beforeId) {
+  if ($('#followDialog').open || $('#leadDialog').open) return;
+  followPending = { leadId: lead.id, statusId: status.id, beforeId };
+  $('#followTitle').textContent = `${status.name}: ${lead.name}`;
+  $('#followInfo').textContent = `${lead.phone ? `טלפון: ${lead.phone}. ` : ''}כדי להעביר ל"${status.name}" חובה לקבוע מועד מעקב. ביטול משאיר את הליד במקומו.`;
+  $('#fuDate').value = lead.nextFollowUp || '';
+  $('#fuTime').value = lead.nextFollowUpTime || '';
+  $('#followOk').textContent = `אשר והעבר ל"${status.name}"`;
+  $('#followDialog').showModal();
+  $('#fuDate').focus();
+}
+function confirmFollowUp() {
+  const p = activePipeline();
+  const t = followPending;
+  const lead = p && t && p.leads.find(l => l.id === t.leadId);
+  if (lead) {
+    lead.nextFollowUp = $('#fuDate').value;
+    lead.nextFollowUpTime = $('#fuTime').value;
+    placeLead(p, lead, t.statusId, t.beforeId);
+  }
+  followPending = null;
+  $('#followDialog').close();
   commit();
 }
 function setOutcome(id, outcome) {
@@ -962,7 +1083,7 @@ function setOutcome(id, outcome) {
 }
 // A drop on "נסגר" in a pipeline with the meeting automation opens the meeting dialog instead of just closing the lead.
 function dropOutcome(id, outcome) {
-  if (outcome === 'closed' && closeAutomation(activePipeline())) { openLead(id, { meeting: true }); return; }
+  if (outcome === 'closed' && closeAutomation(activePipeline())) { openLead(id, { transition: { kind: 'close' } }); return; }
   setOutcome(id, outcome);
 }
 
@@ -972,7 +1093,15 @@ function openAutomation() {
   if (!p) return;
   const others = state.pipelines.filter(x => x !== p);
   const current = closeAutomation(p);
-  $('#autoTitle').textContent = `אוטומציה בסגירה: ${p.name}`;
+  $('#autoTitle').textContent = `אוטומציות: ${p.name}`;
+  $('#autoStatuses').replaceChildren(...p.statuses.map(s => {
+    const now = s.onEnter ? s.onEnter.action : '';
+    return h('div', { class: 'auto-row' },
+      h('span', {}, s.name),
+      h('select', { 'data-status': s.id, 'data-initial': now, 'aria-label': `פעולה בכניסה ל${s.name}` },
+        h('option', { value: '', selected: !now }, 'ללא'),
+        ...Object.entries(RULE_ACTIONS).map(([value, label]) => h('option', { value, selected: value === now }, label))));
+  }));
   $('#autoTarget').replaceChildren(...others.map(x => h('option', { value: x.id, selected: !!current && current.target === x }, x.name)));
   $('#autoOn').checked = !!current;
   $('#autoOn').disabled = !others.length;
@@ -984,6 +1113,12 @@ function saveAutomation() {
   const p = activePipeline();
   const target = $('#autoTarget').value;
   p.onClose = $('#autoOn').checked && target ? { action: 'meeting', targetPipelineId: target } : null;
+  // Only statuses the user actually changed are written, so untouched ones can still be set up automatically by name.
+  for (const sel of document.querySelectorAll('#autoStatuses select')) {
+    if (sel.value === sel.dataset.initial) continue;
+    const s = p.statuses.find(x => x.id === sel.dataset.status);
+    if (s) s.onEnter = sel.value ? { action: sel.value } : null;
+  }
   $('#autoDialog').close();
   commit();
 }
@@ -1126,7 +1261,7 @@ board.addEventListener('drop', e => {
   const after = cardAfter(col.querySelector('.cards'), e.clientY);
   const id = dragId;
   endDrag();
-  moveLead(id, col.dataset.status, after ? after.dataset.id : null);
+  requestMove(id, col.dataset.status, after ? after.dataset.id : null);
 });
 
 document.querySelectorAll('.zone').forEach(zone => {
@@ -1152,6 +1287,8 @@ $('#automationBtn').addEventListener('click', openAutomation);
 $('#autoOn').addEventListener('change', () => { $('#autoTarget').disabled = !$('#autoOn').checked; });
 $('#autoForm').addEventListener('submit', e => { e.preventDefault(); saveAutomation(); });
 $('#autoCancel').addEventListener('click', () => $('#autoDialog').close());
+$('#followForm').addEventListener('submit', e => { e.preventDefault(); confirmFollowUp(); });
+$('#followCancel').addEventListener('click', () => $('#followDialog').close());
 // Meeting fields: keep the "end time if empty" hint fresh and clear stale custom errors as soon as the user edits.
 for (const sel of ['#fMDate', '#fMTime']) $(sel).addEventListener('input', () => { updateEndHint(); $('#fMEnd').setCustomValidity(''); });
 $('#fMEnd').addEventListener('input', () => $('#fMEnd').setCustomValidity(''));
