@@ -100,6 +100,10 @@
   .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--line); color: var(--muted); }
   .chip.today { background: var(--accent-soft); color: var(--accent); }
   .chip.overdue { background: var(--fail-soft); color: var(--fail); }
+  .chip:has(> .chip-x) { display: inline-flex; align-items: center; gap: 2px; padding-inline-end: 3px; }
+  .chip .chip-x { border: 0; background: none; color: inherit; padding: 0 4px; font-size: 11px; line-height: 1.4; opacity: .65; border-radius: 999px; }
+  .chip .chip-x:hover:not(:disabled) { opacity: 1; background: rgba(0, 0, 0, .1); }
+  .chip .chip-x::before { content: '✕'; } /* drawn by CSS, so the chip's own text stays just the date */
   .drop-line { height: 3px; border-radius: 2px; background: var(--accent); pointer-events: none; flex: none; }
   .add-col {
     flex: 0 0 200px; border: 2px dashed var(--line); background: none; border-radius: 12px;
@@ -2442,6 +2446,43 @@ function renderColumn(p, s, i) {
     h('div', { class: 'cards' }, ...leads.map(renderCard)));
 }
 
+// A chip with a small ✕ that removes what it shows (a meeting or a follow-up that ended up not happening).
+const chipWithX = (cls, text, label, onRemove) => h('span', { class: `chip ${cls}`.trim() }, text,
+  h('button', { type: 'button', class: 'chip-x', 'aria-label': label, title: label, onclick: e => { e.stopPropagation(); onRemove(); } }));
+let removingItem = false;
+// Takes the meeting or the follow-up off a lead. If Google Calendar holds an event for it, that event is deleted too
+// (guests of a meeting get a cancellation), and if the calendar cannot be reached the user chooses whether to remove it anyway.
+async function removeCardItem(id, kind) {
+  if (removingItem) return;
+  const p = activePipeline();
+  const lead = p && p.leads.find(l => l.id === id);
+  const isMeeting = kind === 'meeting';
+  if (!lead || (isMeeting ? !lead.meeting : !lead.nextFollowUp)) return;
+  removingItem = true;
+  try {
+    const entry = lead.calendar && lead.calendar[kind];
+    const what = isMeeting ? 'הפגישה' : 'מועד המעקב';
+    const will = isMeeting ? 'תוסר' : 'יוסר'; // "meeting" is feminine in Hebrew, "follow-up date" masculine
+    const del = !!entry && !!googleClientId();
+    const msg = del ? `${what} ${will} מהליד והאירוע יימחק מהיומן${isMeeting && lead.meeting.guests.length ? '. האורחים יקבלו ביטול מגוגל' : ''}.`
+      : entry ? `${what} ${will} מהליד. האירוע ביומן לא יימחק, כי גוגל לא מחובר.`
+      : `${what} ${will} מהכרטיס.`;
+    if (!(await askConfirm(isMeeting ? 'הסרת פגישה' : 'הסרת מועד מעקב', msg, 'הסר'))) return;
+    let deleted = false;
+    if (del) {
+      try { await calendarDelete(entry.id, isMeeting ? 'all' : 'none'); deleted = true; }
+      catch (e) {
+        if (e instanceof GoogleError && (e.status === 404 || e.status === 410)) deleted = true; // already gone from the calendar
+        else if (!(await askConfirm('לא הצלחתי למחוק מהיומן', `${e.message}. להסיר מהכרטיס בכל זאת? האירוע יישאר ביומן.`, 'הסר בכל זאת'))) return;
+      }
+    }
+    if (isMeeting) lead.meeting = null; else { lead.nextFollowUp = ''; lead.nextFollowUpTime = ''; }
+    if (lead.calendar) delete lead.calendar[kind];
+    commit();
+    showToast(`${what} הוסר${isMeeting ? 'ה' : ''}${deleted ? ' והאירוע נמחק מהיומן' : ''}`);
+  } finally { removingItem = false; }
+}
+
 function renderCard(l) {
   const sub = [l.company, l.category].filter(Boolean);
   const fu = followUpInfo(l);
@@ -2451,8 +2492,8 @@ function renderCard(l) {
     sub.length ? h('div', { class: 'card-sub' }, ...sub.flatMap((s, i) => [i ? ' · ' : null, h('bdi', {}, s)])) : null,
     l.phone ? h('div', { class: 'card-sub' }, h('span', { class: 'ltr' }, l.phone)) : null,
     h('div', { class: 'card-meta' },
-      l.meeting ? h('span', { class: 'chip meet' }, `פגישה: ${fmtIso(l.meeting.date)} ${l.meeting.time}${l.calendar && l.calendar.meeting ? ' · ביומן' : ''}`) : null,
-      fu ? h('span', { class: `chip ${fu.cls}` }, fu.text) : null,
+      l.meeting ? chipWithX('meet', `פגישה: ${fmtIso(l.meeting.date)} ${l.meeting.time}${l.calendar && l.calendar.meeting ? ' · ביומן' : ''}`, 'הסר פגישה', () => removeCardItem(l.id, 'meeting')) : null,
+      fu ? chipWithX(fu.cls, fu.text, 'הסר מועד מעקב', () => removeCardItem(l.id, 'follow')) : null,
       last ? h('span', { title: relDays(last) }, `פנייה אחרונה: ${fmtDate(last)}`) : h('span', {}, 'אין פנייה עדיין')));
 }
 
