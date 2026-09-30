@@ -236,6 +236,12 @@
   .cal-msg.err { background: var(--fail-soft); color: var(--fail); }
   #mCalRow .check { margin-bottom: 2px; font-weight: 600; }
   #mCalRow a, #followCalText a { color: var(--accent); font-weight: 600; }
+  .q-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin: 6px 0; }
+  .q-inputs label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 2px; }
+  .q-inputs input { width: 100%; }
+  @media (max-width: 560px) { .q-inputs { grid-template-columns: 1fr; } }
+  .phone-link { color: inherit; text-decoration: none; }
+  .phone-link:hover { color: var(--accent); text-decoration: underline; }
   .sig-box { margin: 0 0 10px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
   .sig-box .check { margin-bottom: 4px; font-weight: 600; }
   .sig-title { font-weight: 600; margin-bottom: 4px; }
@@ -249,9 +255,9 @@
   #autoDialog h4 { margin: 14px 0 4px; font-size: 14px; }
   #followInfo { margin: -4px 0 12px; }
   .auto-item { margin-bottom: 6px; }
-  .auto-tpl { margin: 2px 0 10px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
-  .auto-tpl .hint { margin-bottom: 6px; }
-  .auto-tpl input, .auto-tpl textarea { width: 100%; margin: 0 0 6px; }
+  .auto-tpl, .auto-quote { margin: 2px 0 10px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
+  .auto-tpl .hint, .auto-quote .hint { margin-bottom: 6px; }
+  .auto-tpl input, .auto-tpl textarea, .auto-quote input, .auto-quote textarea { width: 100%; margin: 0 0 6px; }
   .tpl-vars { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 13px; }
   .tpl-vars .link { padding: 2px 0; }
   .auto-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
@@ -345,7 +351,7 @@
         <input id="fName" required maxlength="120">
       </div>
       <div class="field">
-        <div class="field-head"><label for="fPhone">טלפון <span class="req">*</span></label></div>
+        <div class="field-head"><label for="fPhone">טלפון <span class="req">*</span></label><a id="fPhoneCall" hidden>התקשר ☎</a></div>
         <input id="fPhone" type="tel" required maxlength="40" dir="auto">
       </div>
       <div class="field">
@@ -503,6 +509,15 @@
         <textarea id="mBody" rows="10" required dir="auto"></textarea>
       </div>
     </div>
+    <div id="qBox" class="sig-box" hidden>
+      <label class="check"><input type="checkbox" id="qOn"><span>צרף הצעת מחיר (PDF) למייל</span></label>
+      <div id="qFields" hidden>
+        <p id="qHint" class="hint"></p>
+        <div id="qInputs" class="q-inputs"></div>
+        <button id="qPreview" type="button">תצוגה מקדימה של ההצעה</button>
+        <p id="qError" class="imp-error" role="alert" hidden></p>
+      </div>
+    </div>
     <div id="mSigBox" class="sig-box" hidden>
       <label id="mSigCheck" class="check" hidden><input type="checkbox" id="mSigOn" checked><span>צרף את החתימה מ-Gmail</span></label>
       <div id="mSigTitle" class="sig-title">חתימה מ-Gmail</div>
@@ -624,6 +639,8 @@ const iconBtn = (glyph, label, onclick, disabled = false) =>
 //      (meeting, followup). For 'email' and 'summary' the lead moves first and the popup only offers to send an email.
 // Status.mailTemplate: undefined | { subject, body } -> the default text of that status's email popup. It may hold
 //   fields like {שם פרטי} that are filled from the lead when the popup opens (see TEMPLATE_VARS).
+// Status.quoteTemplate: undefined | { title, body } -> the price quote attached to that status's email popup (only a status
+//   whose rule is "summary" uses it). Besides the lead fields, any other {field} in the text becomes a box to fill in the popup.
 // "Last contact" is not stored: it is the timestamp of the newest note.
 // A lead with an outcome is off the board but keeps its last statusId, so "return to board" restores it.
 const DEFAULT_STATUSES = ['חדש', 'בקשר', 'פגישה', 'הצעת מחיר'];
@@ -645,6 +662,8 @@ const RULE_ACTIONS = {
 };
 // These two never hold a lead back: the lead moves first, and the popup only decides whether an email goes out.
 const MAIL_ACTIONS = new Set(['email', 'summary']);
+// A lead whose email went out with a quote attached moves to the status with this name (if the pipeline has one).
+const QUOTE_SENT_STATUS = 'נשלחה הצעה';
 
 function newPipeline(name) {
   return { id: uid(), name, statuses: DEFAULT_STATUSES.map(n => ({ id: uid(), name: n })), leads: [] };
@@ -652,6 +671,11 @@ function newPipeline(name) {
 function defaultState() {
   const p = newPipeline('מכירות');
   return { version: 1, activePipelineId: p.id, pipelines: [p], settings: { googleClientId: '' } };
+}
+function normalizeQuoteTemplate(t) {
+  if (!t || typeof t !== 'object') return undefined;
+  const title = String(t.title ?? ''), body = String(t.body ?? '');
+  return title.trim() || body.trim() ? { title, body } : undefined;
 }
 function normalizeMailTemplate(t) {
   if (!t || typeof t !== 'object') return undefined;
@@ -696,6 +720,7 @@ function normalize(d) {
       ...s, id: s.id || uid(), name: String(s.name ?? ''),
       onEnter: s.onEnter === undefined ? undefined : (s.onEnter && RULE_ACTIONS[s.onEnter.action] ? { action: s.onEnter.action } : null),
       mailTemplate: normalizeMailTemplate(s.mailTemplate),
+      quoteTemplate: normalizeQuoteTemplate(s.quoteTemplate),
     }));
     if (!statuses.length) statuses.push({ id: uid(), name: DEFAULT_STATUSES[0] });
     const ids = new Set(statuses.map(s => s.id));
@@ -756,6 +781,12 @@ function followUpInfo(lead) {
   if (lead.nextFollowUp === t) return { cls: 'today', text: `מעקב: היום${time}` };
   return { cls: '', text: `מעקב: ${fmtIso(lead.nextFollowUp)}${time}` };
 }
+// tel: address for a phone number: digits only (and a leading +), so nothing typed in the field can change what is dialled.
+function telHref(raw) {
+  const t = String(raw ?? '').trim();
+  const digits = t.replace(/\D/g, '');
+  return digits.length >= 5 ? `tel:${t.startsWith('+') ? '+' : ''}${digits}` : null;
+}
 // Only http(s) links are ever made clickable; anything else (e.g. "javascript:...") stays plain text.
 function safeUrl(raw) {
   const t = String(raw).trim();
@@ -790,6 +821,7 @@ const TEMPLATE_VARS = {
   'שם פרטי': l => String(l.name).trim().split(/\s+/)[0],
   'חברה': l => l.company,
   'טלפון': l => l.phone,
+  'תאריך': () => fmtDate(Date.now()), // today
   'תאריך פגישה': l => (l.meeting ? fmtIso(l.meeting.date) : ''),
   'שעת פגישה': l => (l.meeting ? l.meeting.time : ''),
   'מיקום הפגישה': l => (l.meeting ? l.meeting.location : ''),
@@ -1146,6 +1178,7 @@ function openLead(id, opts = {}) {
   const cats = new Set(state.pipelines.flatMap(x => x.leads.map(l => l.category)).filter(Boolean));
   $('#categoryList').replaceChildren(...[...cats].sort((a, b) => a.localeCompare(b, 'he')).map(c => h('option', { value: c })));
   updateWebsiteLink();
+  updatePhoneLink();
   renderLeadNotes();
   $('#leadDialog').showModal();
   (meetingMode ? $('#fMDate') : $('#fName')).focus();
@@ -1236,6 +1269,12 @@ function readMeeting() {
   const bad = guests.find(g => !EMAIL_RE.test(g));
   if (bad) return fail($('#fMGuests'), `כתובת המייל "${bad}" אינה תקינה`);
   return { date, time, endTime, location: $('#fMLoc').value.trim(), guests };
+}
+function updatePhoneLink() {
+  const href = telHref($('#fPhone').value);
+  const a = $('#fPhoneCall');
+  a.hidden = !href;
+  if (href) a.href = href; else a.removeAttribute('href');
 }
 function updateWebsiteLink() {
   const url = safeUrl($('#fWebsite').value);
@@ -1441,6 +1480,23 @@ function buildTemplateEditor(status, shown) {
     h('div', { class: 'hint' }, 'נוסח ברירת מחדל למייל. נטען לחלון המייל ואפשר לערוך אותו בכל שליחה. לחיצה על שדה מוסיפה אותו בנקודה שבה עמדת, והוא יתמלא מפרטי הליד:'),
     subject, body, h('div', { class: 'tpl-vars' }, ...vars));
 }
+// The price quote of a status whose rule is "summary": a title and a text, with the same fields as the email text.
+function buildQuoteEditor(status, shown) {
+  const tpl = status.quoteTemplate || { title: '', body: '' };
+  const title = h('input', { class: 'q-title', maxlength: 200, dir: 'auto', placeholder: 'כותרת (למשל: הצעת מחיר)', 'aria-label': `כותרת הצעת מחיר: ${status.name}`, value: tpl.title });
+  const body = h('textarea', { class: 'q-body', rows: 11, dir: 'auto', placeholder: 'תוכן ההצעה', 'aria-label': `תוכן הצעת מחיר: ${status.name}`, value: tpl.body });
+  let last = body;
+  title.addEventListener('focus', () => { last = title; });
+  body.addEventListener('focus', () => { last = body; });
+  const vars = Object.keys(TEMPLATE_VARS).map(k => h('button', { type: 'button', class: 'link tpl-var', onclick: () => insertAtCursor(last, `{${k}}`) }, `{${k}}`));
+  const sample = h('button', { type: 'button', class: 'link', onclick: async () => {
+    if ((title.value.trim() || body.value.trim()) && !(await askConfirm('נוסח לדוגמה', 'הנוסח שכתבת כאן יוחלף בנוסח לדוגמה.', 'החלף'))) return;
+    title.value = QUOTE_SAMPLE.title; body.value = QUOTE_SAMPLE.body;
+  } }, 'הכנס נוסח לדוגמה');
+  return h('div', { class: 'auto-quote', hidden: !shown, 'data-status': status.id },
+    h('div', { class: 'hint' }, 'הצעת מחיר (PDF). בחלון הסיכום אפשר לצרף אותה למייל. שדות הליד לחיצה עליהם מוסיפה אותם. כל שדה אחר שתכתוב בסוגריים מסולסלים, למשל {מחיר}, הופך לתיבה שממלאים בחלון המייל לפני השליחה:'),
+    title, body, h('div', { class: 'tpl-vars' }, ...vars, sample));
+}
 function openAutomation() {
   const p = activePipeline();
   if (!p) return;
@@ -1453,8 +1509,9 @@ function openAutomation() {
       h('option', { value: '', selected: !now }, 'ללא'),
       ...Object.entries(RULE_ACTIONS).map(([value, label]) => h('option', { value, selected: value === now }, label)));
     const editor = buildTemplateEditor(s, MAIL_ACTIONS.has(now));
-    select.addEventListener('change', () => { editor.hidden = !MAIL_ACTIONS.has(select.value); });
-    return h('div', { class: 'auto-item' }, h('div', { class: 'auto-row' }, h('span', {}, s.name), select), editor);
+    const quote = buildQuoteEditor(s, now === 'summary');
+    select.addEventListener('change', () => { editor.hidden = !MAIL_ACTIONS.has(select.value); quote.hidden = select.value !== 'summary'; });
+    return h('div', { class: 'auto-item' }, h('div', { class: 'auto-row' }, h('span', {}, s.name), select), editor, quote);
   }));
   $('#autoTarget').replaceChildren(...others.map(x => h('option', { value: x.id, selected: !!current && current.target === x }, x.name)));
   $('#autoOn').checked = !!current;
@@ -1481,6 +1538,14 @@ function saveAutomation() {
     const subject = editor.querySelector('.tpl-subject').value.trim();
     const body = editor.querySelector('.tpl-body').value.replace(/\s+$/, '');
     if (subject || body.trim()) s.mailTemplate = { subject, body }; else delete s.mailTemplate;
+  }
+  for (const editor of document.querySelectorAll('#autoStatuses .auto-quote')) {
+    if (editor.hidden) continue;
+    const s = p.statuses.find(x => x.id === editor.dataset.status);
+    if (!s) continue;
+    const title = editor.querySelector('.q-title').value.trim();
+    const body = editor.querySelector('.q-body').value.replace(/\s+$/, '');
+    if (title || body.trim()) s.quoteTemplate = { title, body }; else delete s.quoteTemplate;
   }
   $('#autoDialog').close();
   commit();
@@ -1656,29 +1721,44 @@ const base64Lines = s => toBase64(utf8(s)).replace(/.{1,76}/g, '$&\r\n');
 // Text with Hebrew goes out both as plain text and as HTML with right-to-left direction, so the recipient's
 // mail app lines it up on the right; anything else is plain text only. A Gmail signature ({html, text}, see
 // parseSignature) is added under the text, which makes the message plain + HTML even when the text has no Hebrew.
-function buildMime({ to, subject, text, signature }) {
+// attachments = [{ name, type, bytes }] makes the whole message multipart/mixed.
+const bytesBase64Lines = bytes => toBase64(bytes).replace(/.{1,76}/g, '$&\r\n');
+function buildMime({ to, subject, text, signature, attachments }) {
   const list = [].concat(to).map(a => String(a ?? '').trim()).filter(Boolean);
   if (!list.length) throw new GoogleError('address', 'חסר נמען.');
   for (const a of list) if (!EMAIL_RE.test(a) || /[\r\n,<>"]/.test(a)) throw new GoogleError('address', `כתובת המייל "${a}" אינה תקינה.`);
   const sig = signature && signature.html ? signature : null;
+  const files = attachments || [];
   const hebrew = HEBREW_RE.test(String(text ?? ''));
   const nl = t => String(t ?? '').replace(/\r?\n/g, '\r\n');
   const plain = nl(text) + (sig && sig.text ? `\r\n\r\n${nl(sig.text)}` : '');
+  const uniq = () => `=_crm_${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
   const head = ['To: ' + list.join(', '), 'Subject: ' + encodeHeaderText(subject ?? ''), 'MIME-Version: 1.0'];
+  let content; // the message text: its own Content-Type header line(s), a blank line, and the body
   if (!hebrew && !sig) {
-    return [...head, 'Content-Type: text/plain; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', base64Lines(plain)].join('\r\n');
+    content = ['Content-Type: text/plain; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', base64Lines(plain)];
+  } else {
+    const boundary = uniq();
+    const font = 'font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5';
+    const body = `<div dir="${hebrew ? 'rtl' : 'ltr'}" style="direction:${hebrew ? 'rtl' : 'ltr'};text-align:${hebrew ? 'right' : 'left'};${font}">${escapeHtml(nl(text)).replace(/\r\n/g, '<br>\r\n')}</div>`;
+    const html = body + (sig ? `\r\n<br><div dir="auto" class="gmail_signature" style="${font}">${sig.html}</div>` : '');
+    content = [`Content-Type: multipart/alternative; boundary="${boundary}"`, '',
+      `--${boundary}`, 'Content-Type: text/plain; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', base64Lines(plain),
+      `--${boundary}`, 'Content-Type: text/html; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', base64Lines(html),
+      `--${boundary}--`, ''];
   }
-  const boundary = `=_crm_${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
-  const font = 'font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5';
-  const body = `<div dir="${hebrew ? 'rtl' : 'ltr'}" style="direction:${hebrew ? 'rtl' : 'ltr'};text-align:${hebrew ? 'right' : 'left'};${font}">${escapeHtml(nl(text)).replace(/\r\n/g, '<br>\r\n')}</div>`;
-  const html = body + (sig ? `\r\n<br><div dir="auto" class="gmail_signature" style="${font}">${sig.html}</div>` : '');
-  return [...head, `Content-Type: multipart/alternative; boundary="${boundary}"`, '',
-    `--${boundary}`, 'Content-Type: text/plain; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', base64Lines(plain),
-    `--${boundary}`, 'Content-Type: text/html; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', base64Lines(html),
-    `--${boundary}--`, ''].join('\r\n');
+  if (!files.length) return [...head, ...content].join('\r\n');
+  const mixed = uniq();
+  const parts = files.flatMap(f => {
+    const ascii = String(f.name).replace(/[^\x20-\x7e]|["\\]/g, '_');
+    const star = encodeURIComponent(f.name).replace(/['()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+    return [`--${mixed}`, `Content-Type: ${f.type}; name="${ascii}"`, 'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename*=UTF-8''${star}; filename="${ascii}"`, '', bytesBase64Lines(f.bytes)];
+  });
+  return [...head, `Content-Type: multipart/mixed; boundary="${mixed}"`, '', `--${mixed}`, ...content, ...parts, `--${mixed}--`, ''].join('\r\n');
 }
-async function gmailSend({ to, subject, text, signature }) {
-  const raw = toBase64Url(utf8(buildMime({ to, subject, text, signature })));
+async function gmailSend({ to, subject, text, signature, attachments }) {
+  const raw = toBase64Url(utf8(buildMime({ to, subject, text, signature, attachments })));
   const res = await googleApi('https://gmail.googleapis.com/gmail/v1/users/me/messages/send',
     { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ raw }) });
   return res.json();
@@ -1997,11 +2077,137 @@ async function googleDeleteTestEvent() {
   } finally { gg.busy = false; updateGoogleUi(); }
 }
 
+/* ---- price quote (PDF) ---- */
+// The quote is a text template (title + body) written in the automation settings. Besides the lead's own fields
+// ({שם}, {חברה}, ...), any other {field} in it becomes a box to fill in before sending. The text is drawn on a canvas
+// and saved as an A4 PDF (one picture per page, written by hand below), so it needs no library and works offline.
+// The PDF's text is part of the picture, which means it cannot be selected or searched.
+const PDF_W = 794, PDF_H = 1123, PDF_SCALE = 2; // A4 at 96 dpi, drawn at twice the size for sharpness
+const PDF_FONT = 'Arial, "Noto Sans Hebrew", "Segoe UI", sans-serif';
+const QUOTE_SAMPLE = {
+  title: 'הצעת מחיר',
+  body: 'תאריך: {תאריך}\nעבור: {שם}\n\nשלום {שם פרטי},\nבהמשך לפגישתנו, זו ההצעה שלנו:\n\nשירות: {תיאור השירות}\nמחיר: {מחיר}\nתוקף ההצעה: {תוקף ההצעה}\n\nלשאלות אני זמין בטלפון.',
+};
+// Fields of the template that are not lead fields, in the order they first appear.
+function quoteFieldNames(tpl) {
+  const names = [];
+  for (const m of `${tpl.title}\n${tpl.body}`.matchAll(/\{([^{}]+)\}/g)) {
+    const k = m[1].trim();
+    if (!TEMPLATE_VARS[k] && !names.includes(k)) names.push(k);
+  }
+  return names;
+}
+// One pass over the text: lead fields from the lead, the other fields from `values`. A field with no value stays as {…}.
+function renderQuote(tpl, lead, values) {
+  const fill = text => String(text ?? '').replace(/\{([^{}]+)\}/g, (all, key) => {
+    const k = key.trim();
+    const v = TEMPLATE_VARS[k] ? TEMPLATE_VARS[k](lead) : values[k];
+    return v || all;
+  });
+  return { title: fill(tpl.title).trim(), body: fill(tpl.body).replace(/\s+$/, '') };
+}
+function drawQuotePages({ title, body }) {
+  const M = 56, TOP = 64, BOTTOM = PDF_H - 64, TEXT_W = PDF_W - 2 * M;
+  const pages = [];
+  let c = null, y = 0;
+  const newPage = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = PDF_W * PDF_SCALE; canvas.height = PDF_H * PDF_SCALE;
+    c = canvas.getContext('2d');
+    c.scale(PDF_SCALE, PDF_SCALE);
+    c.fillStyle = '#fff'; c.fillRect(0, 0, PDF_W, PDF_H);
+    c.fillStyle = '#111'; c.textBaseline = 'alphabetic';
+    pages.push(canvas);
+    y = TOP;
+  };
+  // Word wrap by measured width; a single word wider than the page is broken by letters.
+  const wrap = (text, font) => {
+    c.font = font;
+    const lines = [];
+    let cur = '';
+    const add = w => {
+      const t = cur ? `${cur} ${w}` : w;
+      if (!cur || c.measureText(t).width <= TEXT_W) { cur = t; return; }
+      lines.push(cur); cur = w;
+    };
+    for (const w of text.split(/\s+/).filter(Boolean)) {
+      if (c.measureText(w).width <= TEXT_W) { add(w); continue; }
+      for (const ch of w) { // too long for one line
+        const t = cur + ch;
+        if (cur && c.measureText(t).width > TEXT_W) { lines.push(cur); cur = ch; } else cur = t;
+      }
+    }
+    if (cur) lines.push(cur);
+    return lines;
+  };
+  const drawLine = (text, font, lh, rtl, align) => {
+    if (y + lh > BOTTOM) newPage();
+    c.font = font;
+    c.direction = rtl ? 'rtl' : 'ltr';
+    c.textAlign = align || (rtl ? 'right' : 'left');
+    c.fillText(text, c.textAlign === 'center' ? PDF_W / 2 : c.textAlign === 'right' ? PDF_W - M : M, y + lh * 0.75);
+    y += lh;
+  };
+  newPage();
+  if (title) {
+    for (const line of wrap(title, `bold 28px ${PDF_FONT}`)) drawLine(line, `bold 28px ${PDF_FONT}`, 38, HEBREW_RE.test(title), 'center');
+    c.strokeStyle = '#999'; c.lineWidth = 1;
+    c.beginPath(); c.moveTo(M, y + 6); c.lineTo(PDF_W - M, y + 6); c.stroke();
+    y += 28;
+  }
+  const font = `16px ${PDF_FONT}`;
+  for (const para of String(body).split(/\r?\n/)) {
+    if (!para.trim()) { y += 14; continue; }
+    const rtl = HEBREW_RE.test(para); // a paragraph keeps one direction and one side, even if its last line is only digits
+    for (const line of wrap(para, font)) drawLine(line, font, 26, rtl);
+  }
+  return pages;
+}
+// A PDF with one full-page JPEG per page: catalog, page tree, then for each page a page object, its content and its image.
+function buildPdf(jpegs) {
+  const enc = new TextEncoder();
+  const chunks = [], offsets = [];
+  let size = 0;
+  const push = x => { const b = typeof x === 'string' ? enc.encode(x) : x; chunks.push(b); size += b.length; };
+  const W = 595.28, H = 841.89; // A4 in points
+  const n = jpegs.length;
+  push(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x25, 0xe2, 0xe3, 0xcf, 0xd3, 0x0a])); // %PDF-1.4 + a binary marker
+  const obj = (num, dict, stream) => {
+    offsets[num] = size;
+    push(`${num} 0 obj\n`);
+    if (stream) { push(`<< ${dict} /Length ${stream.length} >>\nstream\n`); push(stream); push('\nendstream\nendobj\n'); }
+    else push(`${dict}\nendobj\n`);
+  };
+  obj(1, '<< /Type /Catalog /Pages 2 0 R >>');
+  obj(2, `<< /Type /Pages /Count ${n} /Kids [${jpegs.map((_, i) => `${3 + i * 3} 0 R`).join(' ')}] >>`);
+  jpegs.forEach((jpg, i) => {
+    const page = 3 + i * 3;
+    obj(page, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${W} ${H}] /Resources << /XObject << /Im0 ${page + 2} 0 R >> >> /Contents ${page + 1} 0 R >>`);
+    obj(page + 1, '', enc.encode(`q ${W} 0 0 ${H} 0 0 cm /Im0 Do Q`));
+    obj(page + 2, `/Type /XObject /Subtype /Image /Width ${jpg.w} /Height ${jpg.h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode`, jpg.bytes);
+  });
+  const total = 3 + n * 3;
+  const xref = size;
+  push(`xref\n0 ${total}\n0000000000 65535 f \n`);
+  for (let i = 1; i < total; i++) push(`${String(offsets[i]).padStart(10, '0')} 00000 n \n`);
+  push(`trailer\n<< /Size ${total} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const b of chunks) { out.set(b, at); at += b.length; }
+  return out;
+}
+const dataUrlBytes = url => Uint8Array.from(atob(url.slice(url.indexOf(',') + 1)), ch => ch.charCodeAt(0));
+function quotePdf(rendered) {
+  const jpegs = drawQuotePages(rendered).map(cv => ({ bytes: dataUrlBytes(cv.toDataURL('image/jpeg', 0.92)), w: cv.width, h: cv.height }));
+  return buildPdf(jpegs);
+}
+const quoteFileName = lead => `הצעת מחיר - ${String(lead.name).replace(/[\\/:*?"<>|\r\n]+/g, ' ').trim().slice(0, 60)}.pdf`;
+
 /* ================= email popup ================= */
 // Opened right after a lead has moved into a status whose rule is "email" or "summary". Sending is optional:
 // "אל תשלח" leaves the lead in its new status and sends nothing. A sent email is saved on the lead as a note,
 // which also refreshes its "last contact".
-let mailCtx = null; // { leadId, busy, confirming, sig, sigOn, sigLoad, sigBusy, sigNotice }
+let mailCtx = null; // { leadId, busy, confirming, quoteTpl, sig, sigOn, sigLoad, sigBusy, sigNotice }
 const MAIL_TITLE = { email: 'מייל ללקוח', summary: 'סיכום פגישה' };
 function setMailError(msg) {
   const el = $('#mailError');
@@ -2071,11 +2277,54 @@ async function onSigAction() {
     if (mailCtx === ctx) { renderSignature(ctx); if (!ctx.busy) $('#mailSend').disabled = !googleClientId(); }
   }
 }
+// The quote box under the text: shown only when the status has a quote template; ticking it asks for the template's own fields.
+function setQuoteError(msg) { const el = $('#qError'); el.textContent = msg; el.hidden = !msg; }
+function renderQuoteBox(ctx) {
+  const tpl = ctx.quoteTpl;
+  $('#qBox').hidden = !tpl;
+  $('#qOn').checked = false;
+  $('#qFields').hidden = true;
+  setQuoteError('');
+  if (!tpl) return;
+  const names = quoteFieldNames(tpl);
+  $('#qHint').textContent = `ההצעה נבנית מהנוסח שהוגדר ב"אוטומציה" ומצורפת כקובץ PDF. אחרי שליחה הליד עובר ל"${QUOTE_SENT_STATUS}".${names.length ? ' מלא את השדות:' : ''}`;
+  $('#qInputs').replaceChildren(...names.map((n, i) => h('div', {},
+    h('label', { for: `qf${i}` }, n),
+    h('input', { id: `qf${i}`, 'data-q': n, dir: 'auto', maxlength: 300, oninput: e => e.target.setCustomValidity('') }))));
+}
+// { field: value } of the quote boxes. With `needAll`, the first empty one is flagged and null is returned.
+function readQuoteValues(needAll) {
+  const values = {};
+  for (const inp of $('#qInputs').querySelectorAll('input')) {
+    const v = inp.value.trim();
+    if (!v && needAll) { inp.setCustomValidity('יש למלא את השדה'); inp.reportValidity(); return null; }
+    values[inp.dataset.q] = v;
+  }
+  return values;
+}
+async function previewQuote() {
+  const ctx = mailCtx;
+  const p = activePipeline();
+  const lead = p && ctx && p.leads.find(l => l.id === ctx.leadId);
+  if (!lead || !ctx.quoteTpl) return;
+  setQuoteError('');
+  const win = window.open('', '_blank'); // opened first, while the click still counts, then pointed at the PDF
+  if (!win) { setQuoteError('הדפדפן חסם את החלון. אפשר חלונות קופצים לכתובת הזו ולחץ שוב.'); return; }
+  try {
+    const bytes = quotePdf(renderQuote(ctx.quoteTpl, lead, readQuoteValues(false)));
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+    win.location.href = url;
+    setTimeout(() => URL.revokeObjectURL(url), 120000);
+  } catch (e) {
+    win.close();
+    setQuoteError(`לא הצלחתי להכין את ההצעה: ${e.message}`);
+  }
+}
 function openComposer(leadId, kind, status) {
   const p = activePipeline();
   const lead = p && p.leads.find(l => l.id === leadId);
   if (!lead || $('#mailDialog').open) return;
-  mailCtx = { leadId, busy: false, confirming: false, sig: { state: 'off' }, sigOn: true, sigLoad: null, sigBusy: false, sigNotice: '' };
+  mailCtx = { leadId, busy: false, confirming: false, quoteTpl: kind === 'summary' && status.quoteTemplate ? status.quoteTemplate : null, sig: { state: 'off' }, sigOn: true, sigLoad: null, sigBusy: false, sigNotice: '' };
   const ready = !!googleClientId();
   const tpl = status.mailTemplate;
   $('#mailTitle').textContent = `${MAIL_TITLE[kind] || 'מייל'}: ${lead.name}`;
@@ -2094,6 +2343,7 @@ function openComposer(leadId, kind, status) {
   $('#mailSend').textContent = 'שלח';
   $('#mailSkip').disabled = false;
   $('#mailSkip').textContent = 'אל תשלח';
+  renderQuoteBox(mailCtx);
   renderSignature(mailCtx);
   $('#mailDialog').showModal();
   (!lead.email ? $('#mTo') : tpl ? $('#mBody') : $('#mSubject')).focus();
@@ -2110,6 +2360,13 @@ async function sendMail() {
   // Whitespace-only passes the native "required" check, so blank the field and let the browser flag it.
   for (const [value, id] of [[subject, '#mSubject'], [body, '#mBody']]) {
     if (!value) { $(id).value = ''; $(id).reportValidity(); return; }
+  }
+  // A quote to attach: its boxes are checked now, before anything else happens.
+  let quote = null;
+  if (ctx.quoteTpl && $('#qOn').checked) {
+    const values = readQuoteValues(true);
+    if (!values) return;
+    quote = { values, text: renderQuote(ctx.quoteTpl, lead || { name: '', phone: '', company: '', meeting: null }, values) };
   }
   // The signature is read from Gmail, which needs a connection. If there was none when the window opened, connect now,
   // read it, and show it before anything goes out.
@@ -2138,7 +2395,7 @@ async function sendMail() {
     }
   }
   // A template field this lead has no value for (say {חברה}) is still in the text: ask before it goes out as it is.
-  const unfilled = unfilledVars(`${subject}\n${body}`);
+  const unfilled = unfilledVars(`${subject}\n${body}${quote ? `\n${quote.text.title}\n${quote.text.body}` : ''}`);
   if (unfilled.length) {
     ctx.confirming = true;
     const go = await askConfirm('יש שדות שלא מולאו', `בטקסט נשארו: ${unfilled.join(' ')}. לשלוח בכל זאת?`, 'שלח בכל זאת');
@@ -2155,7 +2412,12 @@ async function sendMail() {
   setMailBusy(true);
   setMailError('');
   try {
-    await gmailSend({ to, subject, text: body, signature });
+    let attachments;
+    if (quote) {
+      try { attachments = [{ name: quoteFileName(lead), type: 'application/pdf', bytes: quotePdf(quote.text) }]; }
+      catch (e) { throw new Error(`לא הצלחתי להכין את קובץ ההצעה: ${e.message}`); }
+    }
+    await gmailSend({ to, subject, text: body, signature, attachments });
   } catch (e) {
     setMailBusy(false);
     setMailError(e.message);
@@ -2163,14 +2425,22 @@ async function sendMail() {
     $('#mailSkip').textContent = 'המשך בלי לשלוח';
     return;
   }
+  let movedTo = null;
   if (lead) {
     if (!lead.email) lead.email = to; // a lead without an address keeps the one typed here
-    lead.notes.push({ id: uid(), text: `נשלח מייל אל ${to}\nנושא: ${subject}\n\n${body}`, at: Date.now() });
+    const fields = quote ? Object.entries(quote.values).map(([k, v]) => `\n${k}: ${v}`).join('') : '';
+    const quoteNote = quote ? `\n\nצורפה הצעת מחיר (PDF): ${quoteFileName(lead)}${fields}` : '';
+    lead.notes.push({ id: uid(), text: `נשלח מייל אל ${to}\nנושא: ${subject}\n\n${body}${quoteNote}`, at: Date.now() });
+    // A quote that went out moves the lead on (without running that status's own rule); a summary alone leaves it where it is.
+    if (quote) {
+      const target = p.statuses.find(st => st.name.trim() === QUOTE_SENT_STATUS);
+      if (target) { if (lead.outcome || lead.statusId !== target.id) placeLead(p, lead, target.id, null); movedTo = target; }
+    }
   }
   mailCtx = null;
   $('#mailDialog').close();
   commit();
-  showToast(`המייל נשלח אל ${to}`);
+  showToast(`המייל נשלח אל ${to}${quote ? (movedTo ? ` עם הצעת מחיר, והליד עבר ל"${movedTo.name}"` : ` עם הצעת מחיר (אין בפייפ-ליין הזה סטטוס "${QUOTE_SENT_STATUS}", אז הליד נשאר במקומו)`) : ''}`);
 }
 
 /* ================= CSV import ================= */
@@ -2483,6 +2753,11 @@ async function removeCardItem(id, kind) {
   } finally { removingItem = false; }
 }
 
+function phoneLink(phone) {
+  const a = h('a', { class: 'ltr phone-link', href: telHref(phone), title: 'התקשר' }, phone);
+  a.setAttribute('draggable', 'false'); // a link would otherwise be dragged on its own; this way the card drags when grabbed here
+  return a;
+}
 function renderCard(l) {
   const sub = [l.company, l.category].filter(Boolean);
   const fu = followUpInfo(l);
@@ -2490,7 +2765,9 @@ function renderCard(l) {
   return h('article', { class: 'card', draggable: true, tabindex: 0, 'data-id': l.id },
     h('div', { class: 'card-name' }, l.name),
     sub.length ? h('div', { class: 'card-sub' }, ...sub.flatMap((s, i) => [i ? ' · ' : null, h('bdi', {}, s)])) : null,
-    l.phone ? h('div', { class: 'card-sub' }, h('span', { class: 'ltr' }, l.phone)) : null,
+    l.phone ? h('div', { class: 'card-sub' }, telHref(l.phone)
+      ? phoneLink(l.phone)
+      : h('span', { class: 'ltr' }, l.phone)) : null,
     h('div', { class: 'card-meta' },
       l.meeting ? chipWithX('meet', `פגישה: ${fmtIso(l.meeting.date)} ${l.meeting.time}${l.calendar && l.calendar.meeting ? ' · ביומן' : ''}`, 'הסר פגישה', () => removeCardItem(l.id, 'meeting')) : null,
       fu ? chipWithX(fu.cls, fu.text, 'הסר מועד מעקב', () => removeCardItem(l.id, 'follow')) : null,
@@ -2618,6 +2895,12 @@ $('#gTestCal').addEventListener('click', googleTestCalendar);
 $('#gDelTest').addEventListener('click', googleDeleteTestEvent);
 $('#gClose').addEventListener('click', () => $('#googleDialog').close());
 $('#mailForm').addEventListener('submit', e => { e.preventDefault(); sendMail(); });
+$('#qOn').addEventListener('change', () => {
+  $('#qFields').hidden = !$('#qOn').checked;
+  const first = $('#qInputs').querySelector('input');
+  if ($('#qOn').checked && first) first.focus();
+});
+$('#qPreview').addEventListener('click', previewQuote);
 $('#mSigAct').addEventListener('click', onSigAction);
 $('#mSigOn').addEventListener('change', () => { if (mailCtx) mailCtx.sigOn = $('#mSigOn').checked; });
 $('#mailSkip').addEventListener('click', () => { if (!(mailCtx && mailCtx.busy)) $('#mailDialog').close(); });
@@ -2649,6 +2932,7 @@ $('#leadDelete').addEventListener('click', async () => {
   if (lead && await deleteLead(lead)) $('#leadDialog').close();
 });
 $('#fWebsite').addEventListener('input', updateWebsiteLink);
+$('#fPhone').addEventListener('input', updatePhoneLink);
 $('#fStatus').addEventListener('change', syncStatusRule);
 $('#noteAddBtn').addEventListener('click', addNote);
 $('#noteInput').addEventListener('keydown', e => {
