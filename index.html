@@ -1488,7 +1488,7 @@ function buildQuoteEditor(status, shown) {
   let last = body;
   title.addEventListener('focus', () => { last = title; });
   body.addEventListener('focus', () => { last = body; });
-  const vars = Object.keys(TEMPLATE_VARS).map(k => h('button', { type: 'button', class: 'link tpl-var', onclick: () => insertAtCursor(last, `{${k}}`) }, `{${k}}`));
+  const vars = Object.keys(TEMPLATE_VARS).map(k => h('button', { type: 'button', class: 'link q-var', onclick: () => insertAtCursor(last, `{${k}}`) }, `{${k}}`));
   const sample = h('button', { type: 'button', class: 'link', onclick: async () => {
     if ((title.value.trim() || body.value.trim()) && !(await askConfirm('נוסח לדוגמה', 'הנוסח שכתבת כאן יוחלף בנוסח לדוגמה.', 'החלף'))) return;
     title.value = QUOTE_SAMPLE.title; body.value = QUOTE_SAMPLE.body;
