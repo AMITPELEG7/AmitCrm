@@ -228,6 +228,12 @@
   }
   #mailDialog { width: min(640px, 94vw); max-height: 92vh; overflow: auto; }
   #mailInfo { margin: -4px 0 12px; }
+  .sig-box { margin: 0 0 10px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
+  .sig-box .check { margin-bottom: 4px; font-weight: 600; }
+  .sig-title { font-weight: 600; margin-bottom: 4px; }
+  .sig-box .hint { margin: 0 0 6px; }
+  .sig-box .hint.attn { color: var(--accent); font-weight: 600; }
+  #mSigFrame { display: block; width: 100%; height: 130px; margin-bottom: 4px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color-scheme: light; }
   .fields.one { grid-template-columns: 1fr; }
   #impSkipped { margin-top: 8px; font-size: 13px; }
   #impSkipped ul { margin: 6px 0 0; padding-inline-start: 20px; max-height: 160px; overflow: auto; }
@@ -415,6 +421,7 @@
 <dialog id="googleDialog">
   <h3>חיבור לגוגל</h3>
   <div id="gStatus" class="g-status"></div>
+  <p id="gSigNote" class="hint" hidden></p>
   <div class="field">
     <div class="field-head"><label for="gClientId">מזהה לקוח (Client ID) שיצרת בגוגל</label></div>
     <input id="gClientId" dir="ltr" placeholder="123456789-abc.apps.googleusercontent.com" autocomplete="off" spellcheck="false">
@@ -480,6 +487,13 @@
         <div class="field-head"><label for="mBody">תוכן <span class="req">*</span></label></div>
         <textarea id="mBody" rows="10" required dir="auto"></textarea>
       </div>
+    </div>
+    <div id="mSigBox" class="sig-box" hidden>
+      <label id="mSigCheck" class="check" hidden><input type="checkbox" id="mSigOn" checked><span>צרף את החתימה מ-Gmail</span></label>
+      <div id="mSigTitle" class="sig-title">חתימה מ-Gmail</div>
+      <p id="mSigMsg" class="hint"></p>
+      <iframe id="mSigFrame" sandbox title="החתימה מ-Gmail" hidden></iframe>
+      <button id="mSigAct" type="button" hidden></button>
     </div>
     <p id="mailFrom" class="hint"></p>
     <p id="mailError" class="imp-error" role="alert" hidden></p>
@@ -1383,10 +1397,13 @@ const GOOGLE_SCOPES = {
   calendar: 'https://www.googleapis.com/auth/calendar.events',
   email: 'https://www.googleapis.com/auth/userinfo.email',
 };
-const GOOGLE_SCOPE_LABEL = { gmail: 'שליחת מייל', calendar: 'יומן', email: 'כתובת המייל שלך' };
-const GOOGLE_SCOPE_STRING = Object.values(GOOGLE_SCOPES).join(' ');
+// Reading the Gmail signature needs gmail.settings.basic, which can also change mail settings. It is asked for together
+// with the others but is optional: without it mail and calendar still work, and emails just go out without a signature.
+const GOOGLE_OPTIONAL_SCOPES = { signature: 'https://www.googleapis.com/auth/gmail.settings.basic' };
+const GOOGLE_SCOPE_LABEL = { gmail: 'שליחת מייל', calendar: 'יומן', email: 'כתובת המייל שלך', signature: 'קריאת החתימה מ-Gmail' };
+const GOOGLE_SCOPE_STRING = [...Object.values(GOOGLE_SCOPES), ...Object.values(GOOGLE_OPTIONAL_SCOPES)].join(' ');
 const GOOGLE_SESSION_KEY = 'amitcrm.googleSession';
-const gg = { client: null, clientId: '', token: '', expiresAt: 0, email: '', settle: null, busy: false, testEventId: '' };
+const gg = { client: null, clientId: '', token: '', scope: '', expiresAt: 0, email: '', settle: null, busy: false, testEventId: '' };
 
 class GoogleError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -1397,20 +1414,20 @@ const googleConnected = () => !!gg.token && Date.now() < gg.expiresAt - 60000;
 
 // The token also survives a page reload for as long as it is valid (sessionStorage is cleared when the tab closes).
 function saveGoogleSession() {
-  try { sessionStorage.setItem(GOOGLE_SESSION_KEY, JSON.stringify({ clientId: googleClientId(), token: gg.token, expiresAt: gg.expiresAt, email: gg.email })); } catch { /* storage unavailable */ }
+  try { sessionStorage.setItem(GOOGLE_SESSION_KEY, JSON.stringify({ clientId: googleClientId(), token: gg.token, scope: gg.scope, expiresAt: gg.expiresAt, email: gg.email })); } catch { /* storage unavailable */ }
 }
 function restoreGoogleSession() {
   try {
     const s = JSON.parse(sessionStorage.getItem(GOOGLE_SESSION_KEY) || 'null');
     if (s && s.token && s.clientId === googleClientId() && s.expiresAt - 60000 > Date.now()) {
-      gg.token = s.token; gg.expiresAt = s.expiresAt; gg.email = s.email || '';
+      gg.token = s.token; gg.scope = s.scope || ''; gg.expiresAt = s.expiresAt; gg.email = s.email || '';
     }
   } catch { /* nothing stored */ }
   updateGoogleUi();
   if (googleClientId()) loadGis().catch(() => {}); // so the sign-in popup can open without waiting for the script
 }
 function forgetGoogleToken() {
-  gg.token = ''; gg.expiresAt = 0; gg.email = '';
+  gg.token = ''; gg.scope = ''; gg.expiresAt = 0; gg.email = '';
   try { sessionStorage.removeItem(GOOGLE_SESSION_KEY); } catch { /* storage unavailable */ }
   updateGoogleUi();
 }
@@ -1465,6 +1482,7 @@ async function requestGoogleToken(prompt = '') {
       const granted = String(resp.scope || '').split(/\s+/);
       const missing = Object.entries(GOOGLE_SCOPES).filter(([, scope]) => !granted.includes(scope)).map(([key]) => GOOGLE_SCOPE_LABEL[key]);
       if (missing.length) return reject(new GoogleError('scope', `חסרות הרשאות: ${missing.join(', ')}. התחבר שוב וסמן את כל ההרשאות.`));
+      gg.scope = String(resp.scope || '');
       gg.token = resp.access_token;
       gg.expiresAt = Date.now() + Number(resp.expires_in || 3600) * 1000;
       resolve(gg.token);
@@ -1529,28 +1547,117 @@ const escapeHtml = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').r
 const base64Lines = s => toBase64(utf8(s)).replace(/.{1,76}/g, '$&\r\n');
 // A UTF-8 message. Recipients are validated so lead data can never inject extra headers.
 // Text with Hebrew goes out both as plain text and as HTML with right-to-left direction, so the recipient's
-// mail app lines it up on the right; anything else is plain text only.
-function buildMime({ to, subject, text }) {
+// mail app lines it up on the right; anything else is plain text only. A Gmail signature ({html, text}, see
+// parseSignature) is added under the text, which makes the message plain + HTML even when the text has no Hebrew.
+function buildMime({ to, subject, text, signature }) {
   const list = [].concat(to).map(a => String(a ?? '').trim()).filter(Boolean);
   if (!list.length) throw new GoogleError('address', 'חסר נמען.');
   for (const a of list) if (!EMAIL_RE.test(a) || /[\r\n,<>"]/.test(a)) throw new GoogleError('address', `כתובת המייל "${a}" אינה תקינה.`);
-  const plain = String(text ?? '').replace(/\r?\n/g, '\r\n');
+  const sig = signature && signature.html ? signature : null;
+  const hebrew = HEBREW_RE.test(String(text ?? ''));
+  const nl = t => String(t ?? '').replace(/\r?\n/g, '\r\n');
+  const plain = nl(text) + (sig && sig.text ? `\r\n\r\n${nl(sig.text)}` : '');
   const head = ['To: ' + list.join(', '), 'Subject: ' + encodeHeaderText(subject ?? ''), 'MIME-Version: 1.0'];
-  if (!HEBREW_RE.test(plain)) {
+  if (!hebrew && !sig) {
     return [...head, 'Content-Type: text/plain; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', base64Lines(plain)].join('\r\n');
   }
   const boundary = `=_crm_${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
-  const html = `<div dir="rtl" style="direction:rtl;text-align:right;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5">${escapeHtml(plain).replace(/\r\n/g, '<br>\r\n')}</div>`;
+  const font = 'font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5';
+  const body = `<div dir="${hebrew ? 'rtl' : 'ltr'}" style="direction:${hebrew ? 'rtl' : 'ltr'};text-align:${hebrew ? 'right' : 'left'};${font}">${escapeHtml(nl(text)).replace(/\r\n/g, '<br>\r\n')}</div>`;
+  const html = body + (sig ? `\r\n<br><div dir="auto" class="gmail_signature" style="${font}">${sig.html}</div>` : '');
   return [...head, `Content-Type: multipart/alternative; boundary="${boundary}"`, '',
     `--${boundary}`, 'Content-Type: text/plain; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', base64Lines(plain),
     `--${boundary}`, 'Content-Type: text/html; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', base64Lines(html),
     `--${boundary}--`, ''].join('\r\n');
 }
-async function gmailSend({ to, subject, text }) {
-  const raw = toBase64Url(utf8(buildMime({ to, subject, text })));
+async function gmailSend({ to, subject, text, signature }) {
+  const raw = toBase64Url(utf8(buildMime({ to, subject, text, signature })));
   const res = await googleApi('https://gmail.googleapis.com/gmail/v1/users/me/messages/send',
     { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ raw }) });
   return res.json();
+}
+
+/* ---- Gmail signature ---- */
+// The signature lives in Gmail (Settings > Signature) and is read from there every time it is needed, so changing it
+// in Gmail changes it here too. Mail sent through the Gmail API does not get it automatically, which is why it is added by hand.
+// It arrives as HTML, so it is cleaned before use: no scripts, no event handlers, no forms, and only web links.
+const SIG_DROP = 'script,style,iframe,frame,frameset,object,embed,applet,form,input,button,textarea,select,option,link,meta,base,noscript,svg,math,template,audio,video,source,canvas';
+const SIG_URL_ATTRS = ['href', 'src', 'background', 'action', 'formaction', 'poster', 'xlink:href', 'data'];
+const SIG_BLOCK = new Set(['DIV', 'P', 'TABLE', 'TR', 'UL', 'OL', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'PRE', 'HR', 'SECTION', 'ARTICLE', 'HEADER', 'FOOTER', 'ADDRESS']);
+function cleanSignatureDom(root) {
+  root.querySelectorAll(SIG_DROP).forEach(el => el.remove());
+  for (const el of root.querySelectorAll('*')) {
+    for (const a of [...el.attributes]) {
+      const name = a.name.toLowerCase();
+      const value = a.value.replace(/[\u0000- ]+/g, '');
+      if (name.startsWith('on') || name === 'srcset' || name === 'srcdoc' || name === 'formaction') el.removeAttribute(a.name);
+      else if (SIG_URL_ATTRS.includes(name) && !/^(https?:|mailto:|tel:|#)/i.test(value)) el.removeAttribute(a.name);
+      else if (name === 'src' && !/^https?:/i.test(value)) el.removeAttribute(a.name);
+      else if (name === 'style' && (/expression\(|javascript:|@import/i.test(a.value) || [...a.value.matchAll(/url\(\s*['"]?\s*([^)'"]*)/gi)].some(m => !/^https?:/i.test(m[1].trim())))) el.removeAttribute(a.name);
+    }
+  }
+  root.querySelectorAll('img:not([src])').forEach(el => el.remove()); // a picture whose address was refused would only show a broken icon
+}
+// Plain-text version for the text part of the email: line breaks kept, links written out as "text (address)".
+function signatureToText(root) {
+  let out = '';
+  const nl = () => { if (out && !out.endsWith('\n')) out += '\n'; };
+  (function walk(n) {
+    if (n.nodeType === 3) { out += n.nodeValue.replace(/\s+/g, ' '); return; }
+    if (n.nodeType !== 1) return;
+    const tag = n.tagName;
+    if (tag === 'BR') { out += '\n'; return; }
+    if (tag === 'IMG') return;
+    const block = SIG_BLOCK.has(tag);
+    if (block) nl();
+    if (tag === 'LI') out += '• ';
+    for (const c of n.childNodes) walk(c);
+    if (tag === 'TD' || tag === 'TH') out += ' ';
+    if (tag === 'A') {
+      const href = (n.getAttribute('href') || '').trim();
+      const target = href.replace(/^(https?:\/\/|mailto:|tel:)/i, '').replace(/\/$/, '');
+      if (/^(https?:|mailto:|tel:)/i.test(href) && target && !n.textContent.toLowerCase().includes(target.toLowerCase())) out += ` (${href.replace(/^(mailto:|tel:)/i, '')})`;
+    }
+    if (block) nl();
+  })(root);
+  return out.split('\n').map(l => l.trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+// -> { html, text, empty }. DOMParser builds an inert document (nothing runs and nothing loads from it).
+function parseSignature(raw) {
+  const root = new DOMParser().parseFromString(String(raw || ''), 'text/html').body;
+  cleanSignatureDom(root);
+  const text = signatureToText(root);
+  const empty = !text && !root.querySelector('img');
+  return { html: empty ? '' : root.innerHTML.trim(), text, empty };
+}
+// Which permission is known: 'yes', 'no', or 'unknown' (a connection made before this permission existed does not record it).
+function signatureScope() {
+  if (!gg.scope) return 'unknown';
+  return gg.scope.split(/\s+/).includes(GOOGLE_OPTIONAL_SCOPES.signature) ? 'yes' : 'no';
+}
+const isScopeError = e => !!e && e.code === 'forbidden' && /scope|insufficient/i.test(e.message);
+// The signature of the primary address, because that is the address API mail is sent from.
+async function fetchGmailSignature() {
+  const res = await googleApi('https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs');
+  const list = ((await res.json()).sendAs) || [];
+  const me = (gg.email || '').toLowerCase();
+  const pick = list.find(a => a.isPrimary) || list.find(a => String(a.sendAsEmail || '').toLowerCase() === me) || list.find(a => a.isDefault) || list[0];
+  return { from: (pick && pick.sendAsEmail) || gg.email, ...parseSignature(pick && pick.signature) };
+}
+// One place that turns "what happened when reading the signature" into a state the screens can show:
+// off (no Google set up), offline (not connected), loading, ok, none (no signature in Gmail), noscope, error.
+async function readSignature() {
+  if (!googleClientId()) return { state: 'off' };
+  if (!googleConnected()) return { state: 'offline' };
+  if (signatureScope() === 'no') return { state: 'noscope' };
+  try {
+    const r = await fetchGmailSignature();
+    return r.empty ? { state: 'none', from: r.from } : { state: 'ok', from: r.from, html: r.html, text: r.text };
+  } catch (e) {
+    if (isScopeError(e)) return { state: 'noscope' };
+    if (e && e.code === 'expired') return { state: 'offline' };
+    return { state: 'error', error: (e && e.message) || 'שגיאה לא ידועה' };
+  }
 }
 
 /* ---- Calendar ---- */
@@ -1589,6 +1696,11 @@ function updateGoogleUi() {
   for (const sel of ['#gTestMail', '#gTestCal']) $(sel).disabled = !connected || gg.busy;
   $('#gDelTest').hidden = !gg.testEventId;
   $('#gDelTest').disabled = !connected || gg.busy;
+  const sigScope = connected ? signatureScope() : '';
+  $('#gSigNote').hidden = !connected;
+  $('#gSigNote').textContent = sigScope === 'yes' ? 'החתימה מ-Gmail: ההרשאה לקרוא אותה אושרה.'
+    : sigScope === 'no' ? 'החתימה מ-Gmail: ההרשאה לא אושרה, ולכן מיילים יוצאים בלי חתימה. "התחבר מחדש" יבקש אותה שוב.'
+    : 'החתימה מ-Gmail: לא ידוע אם ההרשאה אושרה. "התחבר מחדש" יבקש אותה.';
 }
 function openGoogleDialog() {
   $('#gClientId').value = googleClientId();
@@ -1617,7 +1729,7 @@ async function onGoogleConnect() {
   setGoogleResult('busy', 'ממתין לחלון ההתחברות של גוגל…');
   updateGoogleUi();
   try {
-    await connectGoogle();
+    await connectGoogle(googleConnected() && signatureScope() === 'no' ? 'consent' : '');
     setGoogleResult('ok', gg.email ? `מחובר: ${gg.email}` : 'מחובר.');
   } catch (e) {
     setGoogleResult('err', e.message);
@@ -1641,8 +1753,16 @@ async function googleTestMail() {
   setGoogleResult('busy', 'שולח מייל ניסיון…');
   try {
     if (!gg.email) throw new GoogleError('no_email', 'לא ידועה כתובת המייל שלך. לחץ "התחבר מחדש".');
-    await gmailSend({ to: gg.email, subject: 'בדיקת חיבור מה-CRM', text: `אם קיבלת את המייל הזה, שליחת מיילים מה-CRM עובדת.\n(נשלח ב-${fmtDateTime(Date.now())})` });
-    setGoogleResult('ok', `נשלח מייל ניסיון אל ${gg.email}. בדוק בתיבת הדואר (או בנשלחים).`);
+    // The test also shows whether the Gmail signature comes through.
+    const sig = await readSignature();
+    await gmailSend({ to: gg.email, subject: 'בדיקת חיבור מה-CRM', text: `אם קיבלת את המייל הזה, שליחת מיילים מה-CRM עובדת.\n(נשלח ב-${fmtDateTime(Date.now())})`, signature: sig.state === 'ok' ? sig : null });
+    const sigNote = {
+      ok: ' כולל החתימה מ-Gmail.',
+      none: ' בלי חתימה, כי לא הוגדרה חתימה ב-Gmail.',
+      noscope: ' בלי חתימה: חסרה ההרשאה "קריאת החתימה מ-Gmail" (לחץ "התחבר מחדש").',
+      error: ` בלי חתימה: ${sig.error}`,
+    }[sig.state] || '';
+    setGoogleResult('ok', `נשלח מייל ניסיון אל ${gg.email}${sigNote} בדוק בתיבת הדואר (או בנשלחים).`);
   } catch (e) { setGoogleResult('err', e.message); }
   finally { gg.busy = false; updateGoogleUi(); }
 }
@@ -1682,7 +1802,7 @@ async function googleDeleteTestEvent() {
 // Opened right after a lead has moved into a status whose rule is "email" or "summary". Sending is optional:
 // "אל תשלח" leaves the lead in its new status and sends nothing. A sent email is saved on the lead as a note,
 // which also refreshes its "last contact".
-let mailCtx = null; // { leadId, busy }
+let mailCtx = null; // { leadId, busy, confirming, sig, sigOn, sigLoad, sigBusy, sigNotice }
 const MAIL_TITLE = { email: 'מייל ללקוח', summary: 'סיכום פגישה' };
 function setMailError(msg) {
   const el = $('#mailError');
@@ -1695,11 +1815,68 @@ function setMailBusy(busy) {
   $('#mailSkip').disabled = busy;
   if (busy) $('#mailSend').textContent = 'שולח…';
 }
+// The signature box under the text: what was read from Gmail, or why there is nothing to show.
+const SIG_ACTION = { offline: 'התחבר וטען חתימה', noscope: 'התחבר מחדש', none: 'טען שוב', error: 'נסה שוב' };
+function renderSignature(ctx) {
+  const sig = ctx.sig || { state: 'off' };
+  const st = sig.state;
+  $('#mSigBox').hidden = st === 'off';
+  if (st === 'off') return;
+  const msg = {
+    loading: 'טוען את החתימה מ-Gmail…',
+    offline: 'החתימה נקראת מ-Gmail, ולכן צריך חיבור לגוגל. אחרי החיבור היא תופיע כאן.',
+    ok: 'החתימה נקראה עכשיו מ-Gmail. שינוי שלה ב-Gmail (הגדרות ← חתימה) יופיע כאן בפתיחה הבאה של החלון.',
+    none: 'לא הוגדרה ב-Gmail חתימה לכתובת הראשית שלך, ולכן המייל יישלח בלי חתימה. אפשר להגדיר אותה ב-Gmail: הגדרות ← חתימה.',
+    noscope: 'אין הרשאה לקרוא את החתימה מ-Gmail. התחבר מחדש ואשר את ההרשאה "קריאת החתימה מ-Gmail". בלעדיה המייל יישלח בלי חתימה.',
+    error: `לא הצלחתי לקרוא את החתימה מ-Gmail: ${sig.error || ''}`,
+  }[st];
+  $('#mSigCheck').hidden = st !== 'ok';
+  $('#mSigTitle').hidden = st === 'ok';
+  $('#mSigOn').checked = ctx.sigOn !== false;
+  const note = $('#mSigMsg');
+  note.textContent = ctx.sigNotice ? `${ctx.sigNotice} ${msg}` : msg;
+  note.classList.toggle('attn', !!ctx.sigNotice);
+  const frame = $('#mSigFrame');
+  frame.hidden = st !== 'ok';
+  // Scripts stay off (sandbox with no permissions), and what is shown was cleaned by parseSignature.
+  frame.srcdoc = st === 'ok'
+    ? `<!doctype html><meta charset="utf-8"><body dir="auto" style="margin:8px;font:14px/1.5 Arial,Helvetica,sans-serif;color:#222;background:#fff">${sig.html}`
+    : '';
+  const act = $('#mSigAct');
+  act.hidden = !SIG_ACTION[st];
+  act.textContent = SIG_ACTION[st] || '';
+  act.disabled = !!ctx.sigBusy;
+}
+async function loadSignature(ctx) {
+  if (googleClientId() && googleConnected() && signatureScope() !== 'no') { ctx.sig = { state: 'loading' }; renderSignature(ctx); }
+  const sig = await readSignature();
+  if (mailCtx !== ctx) return; // the window was closed meanwhile
+  ctx.sig = sig;
+  renderSignature(ctx);
+}
+async function onSigAction() {
+  const ctx = mailCtx;
+  if (!ctx || ctx.busy || ctx.sigBusy) return;
+  ctx.sigBusy = true;
+  ctx.sigNotice = '';
+  $('#mSigAct').disabled = true;
+  $('#mailSend').disabled = true; // so an email cannot go out while the signature is still being read
+  try {
+    // Sign in when there is no connection, and again (asking for the missing permission) when the signature was refused.
+    if (!googleConnected() || ctx.sig.state === 'noscope') await connectGoogle(ctx.sig.state === 'noscope' ? 'consent' : '');
+    await loadSignature(ctx);
+  } catch (e) {
+    if (mailCtx === ctx) { ctx.sig = { state: 'error', error: e.message }; renderSignature(ctx); }
+  } finally {
+    ctx.sigBusy = false;
+    if (mailCtx === ctx) { renderSignature(ctx); if (!ctx.busy) $('#mailSend').disabled = !googleClientId(); }
+  }
+}
 function openComposer(leadId, kind, status) {
   const p = activePipeline();
   const lead = p && p.leads.find(l => l.id === leadId);
   if (!lead || $('#mailDialog').open) return;
-  mailCtx = { leadId, busy: false, confirming: false };
+  mailCtx = { leadId, busy: false, confirming: false, sig: { state: 'off' }, sigOn: true, sigLoad: null, sigBusy: false, sigNotice: '' };
   const ready = !!googleClientId();
   const tpl = status.mailTemplate;
   $('#mailTitle').textContent = `${MAIL_TITLE[kind] || 'מייל'}: ${lead.name}`;
@@ -1718,18 +1895,48 @@ function openComposer(leadId, kind, status) {
   $('#mailSend').textContent = 'שלח';
   $('#mailSkip').disabled = false;
   $('#mailSkip').textContent = 'אל תשלח';
+  renderSignature(mailCtx);
   $('#mailDialog').showModal();
   (!lead.email ? $('#mTo') : tpl ? $('#mBody') : $('#mSubject')).focus();
+  // Read from Gmail on every open, so a change made there shows up here.
+  const ctx = mailCtx;
+  ctx.sigLoad = loadSignature(ctx);
 }
 async function sendMail() {
   const ctx = mailCtx;
-  if (!ctx || ctx.busy || ctx.confirming) return;
+  if (!ctx || ctx.busy || ctx.confirming || ctx.sigBusy) return;
   const p = activePipeline();
   const lead = p && p.leads.find(l => l.id === ctx.leadId);
   const to = $('#mTo').value.trim(), subject = $('#mSubject').value.trim(), body = $('#mBody').value.trim();
   // Whitespace-only passes the native "required" check, so blank the field and let the browser flag it.
   for (const [value, id] of [[subject, '#mSubject'], [body, '#mBody']]) {
     if (!value) { $(id).value = ''; $(id).reportValidity(); return; }
+  }
+  // The signature is read from Gmail, which needs a connection. If there was none when the window opened, connect now,
+  // read it, and show it before anything goes out.
+  if (ctx.sigLoad) await ctx.sigLoad;
+  if (mailCtx !== ctx) return;
+  if (ctx.sigNotice) { ctx.sigNotice = ''; renderSignature(ctx); }
+  if (ctx.sig.state === 'offline') {
+    setMailBusy(true);
+    setMailError('');
+    try {
+      await ensureGoogleToken();
+      await loadSignature(ctx);
+    } catch (e) {
+      setMailBusy(false);
+      $('#mailSend').textContent = 'נסה שוב';
+      setMailError(e.message);
+      return;
+    }
+    setMailBusy(false);
+    $('#mailSend').textContent = 'שלח';
+    if (mailCtx !== ctx) return;
+    if (ctx.sig.state === 'ok') {
+      ctx.sigNotice = 'נטענה החתימה. בדוק אותה ולחץ "שלח" שוב.';
+      renderSignature(ctx);
+      return;
+    }
   }
   // A template field this lead has no value for (say {חברה}) is still in the text: ask before it goes out as it is.
   const unfilled = unfilledVars(`${subject}\n${body}`);
@@ -1739,10 +1946,17 @@ async function sendMail() {
     ctx.confirming = false;
     if (!go) return;
   }
+  if (ctx.sig.state === 'noscope' || ctx.sig.state === 'error') {
+    ctx.confirming = true;
+    const go = await askConfirm('החתימה לא נטענה', 'המייל יישלח בלי החתימה מ-Gmail. לשלוח בכל זאת?', 'שלח בלי חתימה');
+    ctx.confirming = false;
+    if (!go) return;
+  }
+  const signature = ctx.sig.state === 'ok' && $('#mSigOn').checked ? ctx.sig : null;
   setMailBusy(true);
   setMailError('');
   try {
-    await gmailSend({ to, subject, text: body });
+    await gmailSend({ to, subject, text: body, signature });
   } catch (e) {
     setMailBusy(false);
     setMailError(e.message);
@@ -2163,6 +2377,8 @@ $('#gTestCal').addEventListener('click', googleTestCalendar);
 $('#gDelTest').addEventListener('click', googleDeleteTestEvent);
 $('#gClose').addEventListener('click', () => $('#googleDialog').close());
 $('#mailForm').addEventListener('submit', e => { e.preventDefault(); sendMail(); });
+$('#mSigAct').addEventListener('click', onSigAction);
+$('#mSigOn').addEventListener('change', () => { if (mailCtx) mailCtx.sigOn = $('#mSigOn').checked; });
 $('#mailSkip').addEventListener('click', () => { if (!(mailCtx && mailCtx.busy)) $('#mailDialog').close(); });
 $('#mailDialog').addEventListener('cancel', e => { if (mailCtx && mailCtx.busy) e.preventDefault(); }); // Esc must not hide a send in progress
 $('#mailDialog').addEventListener('close', () => { if (!(mailCtx && mailCtx.busy)) mailCtx = null; });
