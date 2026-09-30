@@ -1,0 +1,706 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CRM</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232563eb'/%3E%3Crect x='6' y='8' width='6' height='16' rx='2' fill='white'/%3E%3Crect x='14' y='8' width='6' height='11' rx='2' fill='white'/%3E%3Crect x='22' y='8' width='4' height='7' rx='2' fill='white'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --text: #1f2430; --muted: #6b7280; --line: #e2e5ea;
+    --accent: #2563eb; --accent-soft: #e8effd;
+    --fail: #dc2626; --fail-soft: #fdecec; --ok: #16a34a; --ok-soft: #e6f6ec;
+    --shadow: 0 1px 2px rgba(16, 24, 40, .08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --panel: #1e2126; --text: #e8eaee; --muted: #9aa1ad; --line: #2d3138;
+      --accent: #6b9bff; --accent-soft: #1f2a44;
+      --fail: #f87171; --fail-soft: #3a1f1f; --ok: #4ade80; --ok-soft: #173325;
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  button, input, select { font: inherit; color: inherit; }
+  button {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 12px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger:hover:not(:disabled) { border-color: var(--fail); color: var(--fail); }
+  button.link { border: 0; background: none; color: var(--muted); padding: 4px 6px; text-decoration: underline; }
+  input, select {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px;
+  }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  /* ---------- top bar ---------- */
+  .bar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px;
+    padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  .group { display: flex; align-items: center; gap: 8px; }
+  .group.grow { flex: 1; min-width: 220px; }
+  .group.grow input { flex: 1; min-width: 0; }
+  #saveState { color: var(--muted); font-size: 13px; }
+  #saveState.error { color: var(--fail); }
+
+  /* ---------- board ---------- */
+  #board {
+    flex: 1; display: flex; gap: 14px; align-items: flex-start;
+    padding: 16px 16px 130px; overflow-x: auto;
+  }
+  .col {
+    flex: 0 0 264px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
+    display: flex; flex-direction: column; max-height: 100%;
+  }
+  .col.over { border-color: var(--accent); background: var(--accent-soft); }
+  .col-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 6px; }
+  .col-title { margin: 0; font-size: 15px; font-weight: 600; flex: 1; overflow-wrap: anywhere; }
+  .count { color: var(--muted); font-size: 13px; }
+  .tools { display: flex; gap: 2px; opacity: 0; transition: opacity .1s; }
+  .col-head:hover .tools, .col-head:focus-within .tools,
+  .card:hover .tools, .card:focus-within .tools { opacity: 1; }
+  button.icon {
+    border: 0; background: none; padding: 2px 6px; color: var(--muted); border-radius: 6px; line-height: 1.2;
+  }
+  button.icon:hover:not(:disabled) { background: var(--line); color: var(--text); }
+  .cards { display: flex; flex-direction: column; gap: 8px; padding: 6px 10px 12px; min-height: 64px; }
+  .cards:empty::before, .cards.empty::before {
+    content: "גרור לכאן"; color: var(--muted); font-size: 13px; text-align: center; padding: 14px 0;
+  }
+  .card {
+    display: flex; align-items: center; gap: 6px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 10px 12px; box-shadow: var(--shadow); cursor: grab;
+  }
+  .card:active { cursor: grabbing; }
+  .card.is-dragging { opacity: .35; }
+  .card-name { flex: 1; overflow-wrap: anywhere; }
+  .drop-line { height: 3px; border-radius: 2px; background: var(--accent); pointer-events: none; flex: none; }
+  .add-col {
+    flex: 0 0 200px; border: 2px dashed var(--line); background: none; border-radius: 12px;
+    padding: 14px; color: var(--muted);
+  }
+  .add-col:hover { border-color: var(--accent); color: var(--accent); }
+  .empty-board { margin: 60px auto; text-align: center; color: var(--muted); }
+  .empty-board button { margin-top: 12px; }
+
+  /* ---------- failed / closed drop zones ---------- */
+  #dropzones {
+    position: fixed; inset-inline: 16px; bottom: 16px; height: 96px; display: flex; gap: 16px;
+    z-index: 30; opacity: 0; visibility: hidden; pointer-events: none;
+    transform: translateY(12px); transition: opacity .15s, transform .15s, visibility .15s;
+  }
+  body.dragging #dropzones { opacity: 1; visibility: visible; pointer-events: auto; transform: none; }
+  .zone {
+    flex: 1; display: grid; place-items: center; font-size: 22px; font-weight: 700;
+    border: 3px dashed; border-radius: 16px; background: var(--panel);
+  }
+  .zone.fail { color: var(--fail); border-color: var(--fail); }
+  .zone.ok { color: var(--ok); border-color: var(--ok); }
+  .zone.fail.over { background: var(--fail-soft); border-style: solid; }
+  .zone.ok.over { background: var(--ok-soft); border-style: solid; }
+
+  /* ---------- dialogs ---------- */
+  dialog {
+    border: 1px solid var(--line); border-radius: 14px; padding: 20px; background: var(--panel);
+    color: var(--text); width: min(460px, 92vw);
+  }
+  dialog::backdrop { background: rgba(0, 0, 0, .4); }
+  dialog h3 { margin: 0 0 10px; font-size: 17px; }
+  dialog p { margin: 0 0 12px; color: var(--muted); }
+  dialog input { width: 100%; margin-bottom: 14px; }
+  .actions { display: flex; gap: 8px; justify-content: flex-start; }
+  #archiveDialog { width: min(560px, 94vw); }
+  .arch-section { margin-top: 14px; }
+  .arch-section h4 { margin: 0 0 6px; font-size: 14px; }
+  .arch-section.fail h4 { color: var(--fail); }
+  .arch-section.ok h4 { color: var(--ok); }
+  .arch-row {
+    display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line);
+    border-radius: 8px; margin-bottom: 6px;
+  }
+  .arch-row span { flex: 1; overflow-wrap: anywhere; }
+  .arch-none { color: var(--muted); font-size: 13px; }
+
+  /* ---------- connect gate ---------- */
+  #gate { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: grid; place-items: center; padding: 16px; }
+  #gateBox {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 28px;
+    width: min(460px, 100%); box-shadow: var(--shadow);
+  }
+  #gateBox h1 { margin: 0 0 8px; font-size: 22px; }
+  #gateBox p { margin: 0 0 16px; color: var(--muted); }
+  #gateBox .err { color: var(--fail); }
+  #gateBox .actions { flex-wrap: wrap; }
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="group">
+    <select id="pipelineSelect" aria-label="בחירת פייפ-ליין"></select>
+    <button id="addPipelineBtn" type="button">+ פייפ-ליין</button>
+    <button id="renamePipelineBtn" type="button">שנה שם</button>
+    <button id="deletePipelineBtn" type="button" class="danger">מחק</button>
+  </div>
+  <form id="addLeadForm" class="group grow" autocomplete="off">
+    <input id="leadName" placeholder="שם הליד" aria-label="שם הליד החדש">
+    <button id="addLeadBtn" class="primary">הוסף ליד</button>
+  </form>
+  <div class="group">
+    <button id="archiveBtn" type="button">נכשלו / נסגרו</button>
+    <span id="saveState" role="status"></span>
+    <button id="switchFileBtn" type="button" class="link">החלף קובץ</button>
+  </div>
+</header>
+
+<main id="board"></main>
+
+<div id="dropzones" aria-hidden="true">
+  <div class="zone fail" data-outcome="failed">נכשל</div>
+  <div class="zone ok" data-outcome="closed">נסגר</div>
+</div>
+
+<dialog id="archiveDialog">
+  <h3 id="archiveTitle">נכשלו / נסגרו</h3>
+  <div id="archiveBody"></div>
+  <div class="actions" style="margin-top:16px"><button id="archiveClose" type="button">סגור</button></div>
+</dialog>
+
+<dialog id="askDialog">
+  <form id="askForm">
+    <h3 id="askTitle"></h3>
+    <p id="askMsg"></p>
+    <input id="askInput">
+    <div class="actions">
+      <button id="askOk" class="primary">אישור</button>
+      <button id="askCancel" type="button">ביטול</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="gate" hidden><div id="gateBox"></div></div>
+
+<script>
+'use strict';
+
+/* ================= helpers ================= */
+const $ = (sel, root = document) => root.querySelector(sel);
+
+// Builds DOM without innerHTML, so lead/status names can never be interpreted as markup.
+function h(tag, props = {}, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k === 'class') el.className = v;
+    else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
+    else if (k in el) el[k] = v;
+    else el.setAttribute(k, v === true ? '' : v);
+  }
+  for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid);
+  return el;
+}
+const uid = () => crypto.randomUUID();
+const iconBtn = (glyph, label, onclick, disabled = false) =>
+  h('button', { class: 'icon', type: 'button', 'aria-label': label, title: label, onclick, disabled }, glyph);
+
+/* ================= data model ================= */
+// state = { version, activePipelineId, pipelines: [{ id, name, statuses: [{id, name}],
+//           leads: [{ id, name, statusId, outcome: null | 'failed' | 'closed', createdAt }] }] }
+// A lead with an outcome is off the board but keeps its last statusId, so "return to board" restores it.
+const DEFAULT_STATUSES = ['חדש', 'בקשר', 'פגישה', 'הצעת מחיר'];
+
+function newPipeline(name) {
+  return { id: uid(), name, statuses: DEFAULT_STATUSES.map(n => ({ id: uid(), name: n })), leads: [] };
+}
+function defaultState() {
+  const p = newPipeline('מכירות');
+  return { version: 1, activePipelineId: p.id, pipelines: [p] };
+}
+// Spreads keep unknown fields, so data written by a newer version is not dropped on save.
+function normalize(d) {
+  const pipelines = d.pipelines.map(p => {
+    const statuses = (p.statuses || []).map(s => ({ ...s, id: s.id || uid(), name: String(s.name ?? '') }));
+    if (!statuses.length) statuses.push({ id: uid(), name: DEFAULT_STATUSES[0] });
+    const ids = new Set(statuses.map(s => s.id));
+    const leads = (p.leads || []).map(l => ({
+      ...l, id: l.id || uid(), name: String(l.name ?? ''),
+      statusId: ids.has(l.statusId) ? l.statusId : statuses[0].id,
+      outcome: l.outcome === 'failed' || l.outcome === 'closed' ? l.outcome : null,
+      createdAt: l.createdAt || Date.now(),
+    }));
+    return { ...p, id: p.id || uid(), name: String(p.name || 'ללא שם'), statuses, leads };
+  });
+  const active = pipelines.some(p => p.id === d.activePipelineId) ? d.activePipelineId : (pipelines[0]?.id ?? null);
+  return { ...d, version: 1, activePipelineId: active, pipelines };
+}
+
+let state = null;
+let fileHandle = null;
+let dragId = null;
+const activePipeline = () => (state && state.pipelines.find(p => p.id === state.activePipelineId)) || null;
+
+/* ================= file storage (File System Access API) ================= */
+const PICKER_TYPES = [{ description: 'קובץ נתוני CRM', accept: { 'application/json': ['.json'] } }];
+const DB_NAME = 'amitcrm', STORE = 'kv', HANDLE_KEY = 'fileHandle';
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbGet(key) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const q = db.transaction(STORE).objectStore(STORE).get(key);
+    q.onsuccess = () => resolve(q.result);
+    q.onerror = () => reject(q.error);
+  });
+}
+async function idbSet(key, value) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).put(value, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function hasPermission(handle, ask) {
+  const opts = { mode: 'readwrite' };
+  if ((await handle.queryPermission(opts)) === 'granted') return true;
+  if (!ask) return false;
+  return (await handle.requestPermission(opts)) === 'granted';
+}
+async function writeState(handle, data) {
+  const w = await handle.createWritable();
+  await w.write(JSON.stringify(data, null, 2));
+  await w.close();
+}
+async function readState(handle) {
+  const text = await (await handle.getFile()).text();
+  if (!text.trim()) return defaultState();
+  let data;
+  try { data = JSON.parse(text); } catch { throw new Error('הקובץ שנבחר אינו JSON תקין.'); }
+  if (!data || !Array.isArray(data.pipelines)) throw new Error('הקובץ שנבחר אינו קובץ נתונים של ה-CRM.');
+  return normalize(data);
+}
+
+// Saves are serialized: while one write runs, further changes just mark the state dirty and get written right after.
+let saving = false, dirty = false;
+function scheduleSave() { dirty = true; if (!saving) flushSave(); }
+async function flushSave() {
+  if (!fileHandle) return;
+  saving = true;
+  setSaveState('saving');
+  try {
+    while (dirty) {
+      dirty = false;
+      await writeState(fileHandle, state);
+    }
+    setSaveState('saved');
+  } catch (e) {
+    dirty = true; // keep it pending so the next change retries
+    setSaveState('error');
+    console.error('save failed', e);
+  } finally {
+    saving = false;
+  }
+}
+function setSaveState(kind) {
+  const el = $('#saveState');
+  el.classList.toggle('error', kind === 'error');
+  if (kind === 'saving') el.textContent = 'שומר…';
+  else if (kind === 'error') el.textContent = 'השמירה נכשלה — בדוק שהקובץ נגיש';
+  else el.textContent = `נשמר ב-${fileHandle ? fileHandle.name : ''} · ${new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })}`;
+}
+window.addEventListener('beforeunload', e => { if (saving || dirty) e.preventDefault(); });
+
+async function activate(handle, data) {
+  fileHandle = handle;
+  state = data;
+  try { await idbSet(HANDLE_KEY, handle); } catch (e) { console.warn('could not remember the file', e); }
+  $('#gate').hidden = true;
+  render();
+  setSaveState('saved');
+}
+
+/* ---- connect screen ---- */
+function showGate(kind, info = {}) {
+  const box = $('#gateBox');
+  box.replaceChildren();
+  $('#gate').hidden = false;
+  const err = info.error ? h('p', { class: 'err' }, info.error) : null;
+
+  if (kind === 'unsupported') {
+    box.append(h('h1', {}, 'הדפדפן לא נתמך'),
+      h('p', {}, 'שמירה לקובץ במחשב עובדת רק ב-Chrome או ב-Edge. פתח את הדף באחד מהם.'));
+    return;
+  }
+  if (kind === 'resume') {
+    box.append(h('h1', {}, 'המשך עבודה'),
+      h('p', {}, `הדפדפן צריך את אישורך כדי להמשיך לעבוד עם הקובץ ${info.handle.name}.`), err,
+      h('div', { class: 'actions' },
+        h('button', { class: 'primary', type: 'button', onclick: () => resume(info.handle) }, 'המשך'),
+        h('button', { type: 'button', onclick: () => showGate('connect') }, 'בחר קובץ אחר')));
+    return;
+  }
+  box.append(h('h1', {}, 'ה-CRM שלי'),
+    h('p', {}, 'הנתונים נשמרים בקובץ במחשב שלך. בחר איפה לשמור אותם.'), err,
+    h('div', { class: 'actions' },
+      h('button', { class: 'primary', type: 'button', onclick: connectNew }, 'צור קובץ נתונים חדש'),
+      h('button', { type: 'button', onclick: connectOpen }, 'פתח קובץ קיים'),
+      info.cancelable ? h('button', { class: 'link', type: 'button', onclick: () => { $('#gate').hidden = true; } }, 'ביטול') : null));
+}
+
+async function connectNew() {
+  try {
+    const handle = await showSaveFilePicker({ suggestedName: 'crm-data.json', types: PICKER_TYPES, startIn: 'documents' });
+    const fresh = defaultState();
+    await writeState(handle, fresh);
+    await activate(handle, fresh);
+  } catch (e) {
+    if (e.name !== 'AbortError') showGate('connect', { error: e.message });
+  }
+}
+async function connectOpen() {
+  let handle;
+  try {
+    [handle] = await showOpenFilePicker({ types: PICKER_TYPES, multiple: false, startIn: 'documents' });
+  } catch (e) {
+    if (e.name !== 'AbortError') showGate('connect', { error: e.message });
+    return;
+  }
+  await resume(handle);
+}
+// Reads the file and starts working. If Chrome needs a fresh permission click, asks for it first.
+async function resume(handle) {
+  try {
+    if (!(await hasPermission(handle, true))) return showGate('resume', { handle, error: 'לא ניתן אישור לכתוב לקובץ.' });
+    await activate(handle, await readState(handle));
+  } catch (e) {
+    if (e.name === 'SecurityError' || e.name === 'NotAllowedError') return showGate('resume', { handle });
+    showGate('connect', { error: e.message });
+  }
+}
+async function boot() {
+  if (!('showSaveFilePicker' in window)) return showGate('unsupported');
+  let handle = null;
+  try { handle = await idbGet(HANDLE_KEY); } catch { /* no remembered file */ }
+  if (!handle) return showGate('connect');
+  try {
+    if (await hasPermission(handle, false)) await activate(handle, await readState(handle));
+    else showGate('resume', { handle });
+  } catch (e) {
+    showGate('connect', { error: e.message });
+  }
+}
+
+/* ================= dialogs ================= */
+function ask({ title, message = '', value = null, placeholder = '', okLabel = 'אישור', danger = false }) {
+  return new Promise(resolve => {
+    const dlg = $('#askDialog'), form = $('#askForm'), input = $('#askInput');
+    $('#askTitle').textContent = title;
+    $('#askMsg').textContent = message;
+    $('#askMsg').hidden = !message;
+    input.hidden = value === null;
+    input.required = value !== null;
+    input.value = value ?? '';
+    input.placeholder = placeholder;
+    $('#askOk').textContent = okLabel;
+    $('#askOk').classList.toggle('danger', danger);
+    $('#askOk').classList.toggle('primary', !danger);
+    const finish = result => {
+      form.onsubmit = null; $('#askCancel').onclick = null; dlg.oncancel = null;
+      dlg.close();
+      resolve(result);
+    };
+    form.onsubmit = e => { e.preventDefault(); finish(value === null ? true : input.value.trim() || null); };
+    $('#askCancel').onclick = () => finish(value === null ? false : null);
+    dlg.oncancel = e => { e.preventDefault(); finish(value === null ? false : null); };
+    dlg.showModal();
+    if (value !== null) { input.focus(); input.select(); } else $('#askOk').focus();
+  });
+}
+const askText = (title, value = '', placeholder = '') => ask({ title, value, placeholder });
+const askConfirm = (title, message, okLabel = 'מחק') => ask({ title, message, okLabel, danger: true });
+
+/* ================= actions ================= */
+function commit() { render(); scheduleSave(); }
+
+async function addPipeline() {
+  const name = await askText('פייפ-ליין חדש', '', 'שם הפייפ-ליין');
+  if (!name) return;
+  const p = newPipeline(name);
+  state.pipelines.push(p);
+  state.activePipelineId = p.id;
+  commit();
+}
+async function renamePipeline() {
+  const p = activePipeline();
+  if (!p) return;
+  const name = await askText('שינוי שם פייפ-ליין', p.name);
+  if (!name) return;
+  p.name = name;
+  commit();
+}
+async function deletePipeline() {
+  const p = activePipeline();
+  if (!p) return;
+  const n = p.leads.length;
+  const msg = n ? `הפייפ-ליין "${p.name}" וכל ${n} הלידים שבו יימחקו. אי אפשר לשחזר.` : `הפייפ-ליין "${p.name}" יימחק.`;
+  if (!(await askConfirm('מחיקת פייפ-ליין', msg))) return;
+  state.pipelines = state.pipelines.filter(x => x !== p);
+  state.activePipelineId = state.pipelines[0]?.id ?? null;
+  commit();
+}
+
+async function addStatus() {
+  const p = activePipeline();
+  const name = await askText('סטטוס חדש', '', 'שם הסטטוס');
+  if (!p || !name) return;
+  p.statuses.push({ id: uid(), name });
+  commit();
+}
+async function renameStatus(s) {
+  const name = await askText('שינוי שם סטטוס', s.name);
+  if (!name) return;
+  s.name = name;
+  commit();
+}
+function moveStatus(s, delta) {
+  const arr = activePipeline().statuses;
+  const i = arr.indexOf(s), j = i + delta;
+  if (j < 0 || j >= arr.length) return;
+  [arr[i], arr[j]] = [arr[j], arr[i]];
+  commit();
+}
+async function deleteStatus(s) {
+  const p = activePipeline();
+  if (p.statuses.length <= 1) return;
+  const target = p.statuses.find(x => x !== s);
+  const onBoard = p.leads.filter(l => l.statusId === s.id && !l.outcome).length;
+  if (onBoard && !(await askConfirm('מחיקת סטטוס', `ב-"${s.name}" יש ${onBoard} לידים. הם יועברו ל-"${target.name}".`, 'מחק סטטוס'))) return;
+  p.leads.forEach(l => { if (l.statusId === s.id) l.statusId = target.id; });
+  p.statuses = p.statuses.filter(x => x !== s);
+  commit();
+}
+
+function addLead(name) {
+  const p = activePipeline();
+  if (!p || !name) return;
+  p.leads.push({ id: uid(), name, statusId: p.statuses[0].id, outcome: null, createdAt: Date.now() });
+  commit();
+}
+async function renameLead(l) {
+  const name = await askText('שינוי שם ליד', l.name);
+  if (!name) return;
+  l.name = name;
+  commit();
+}
+async function deleteLead(l) {
+  if (!(await askConfirm('מחיקת ליד', `הליד "${l.name}" יימחק. אי אפשר לשחזר.`))) return;
+  const p = activePipeline();
+  p.leads = p.leads.filter(x => x !== l);
+  commit();
+}
+function moveLead(id, statusId, beforeId) {
+  const p = activePipeline();
+  const lead = p.leads.find(l => l.id === id);
+  if (!lead) return;
+  p.leads = p.leads.filter(l => l !== lead);
+  lead.statusId = statusId;
+  lead.outcome = null;
+  const idx = beforeId ? p.leads.findIndex(l => l.id === beforeId) : -1;
+  if (idx >= 0) p.leads.splice(idx, 0, lead); else p.leads.push(lead);
+  commit();
+}
+function setOutcome(id, outcome) {
+  const lead = activePipeline().leads.find(l => l.id === id);
+  if (!lead) return;
+  lead.outcome = outcome;
+  commit();
+}
+function restoreLead(l) {
+  const p = activePipeline();
+  if (!p.statuses.some(s => s.id === l.statusId)) l.statusId = p.statuses[0].id;
+  l.outcome = null;
+  commit();
+}
+
+/* ================= rendering ================= */
+function render() {
+  if (!state) return;
+  const p = activePipeline();
+
+  $('#pipelineSelect').replaceChildren(
+    ...state.pipelines.map(x => h('option', { value: x.id, selected: x.id === state.activePipelineId }, x.name)));
+  for (const id of ['pipelineSelect', 'renamePipelineBtn', 'deletePipelineBtn', 'leadName', 'addLeadBtn', 'archiveBtn']) {
+    $('#' + id).disabled = !p;
+  }
+  const archived = p ? p.leads.filter(l => l.outcome).length : 0;
+  $('#archiveBtn').textContent = archived ? `נכשלו / נסגרו (${archived})` : 'נכשלו / נסגרו';
+
+  const board = $('#board');
+  if (!p) {
+    board.replaceChildren(h('div', { class: 'empty-board' },
+      h('div', {}, 'אין פייפ-ליינים.'),
+      h('button', { class: 'primary', type: 'button', onclick: addPipeline }, '+ צור פייפ-ליין')));
+  } else {
+    board.replaceChildren(
+      ...p.statuses.map((s, i) => renderColumn(p, s, i)),
+      h('button', { class: 'add-col', type: 'button', onclick: addStatus }, '+ סטטוס'));
+  }
+  if ($('#archiveDialog').open) renderArchive();
+}
+
+function renderColumn(p, s, i) {
+  const leads = p.leads.filter(l => !l.outcome && l.statusId === s.id);
+  return h('section', { class: 'col', 'data-status': s.id },
+    h('header', { class: 'col-head' },
+      h('h2', { class: 'col-title' }, s.name),
+      h('span', { class: 'count' }, String(leads.length)),
+      h('span', { class: 'tools' },
+        iconBtn('✎', 'שנה שם', () => renameStatus(s)),
+        iconBtn('→', 'הזז ימינה', () => moveStatus(s, -1), i === 0),
+        iconBtn('←', 'הזז שמאלה', () => moveStatus(s, 1), i === p.statuses.length - 1),
+        iconBtn('✕', 'מחק סטטוס', () => deleteStatus(s), p.statuses.length <= 1))),
+    h('div', { class: 'cards' }, ...leads.map(renderCard)));
+}
+
+function renderCard(l) {
+  return h('article', { class: 'card', draggable: true, 'data-id': l.id },
+    h('span', { class: 'card-name' }, l.name),
+    h('span', { class: 'tools' },
+      iconBtn('✎', 'שנה שם', () => renameLead(l)),
+      iconBtn('✕', 'מחק ליד', () => deleteLead(l))));
+}
+
+function renderArchive() {
+  const p = activePipeline();
+  const body = $('#archiveBody');
+  if (!p) { body.replaceChildren(); return; }
+  const section = (cls, title, outcome) => {
+    const rows = p.leads.filter(l => l.outcome === outcome);
+    return h('div', { class: `arch-section ${cls}` },
+      h('h4', {}, `${title} (${rows.length})`),
+      rows.length ? rows.map(l => h('div', { class: 'arch-row' },
+        h('span', {}, l.name),
+        h('button', { type: 'button', onclick: () => restoreLead(l) }, 'החזר ללוח'),
+        h('button', { type: 'button', class: 'danger', onclick: () => deleteLead(l) }, 'מחק')))
+        : h('div', { class: 'arch-none' }, 'אין'));
+  };
+  $('#archiveTitle').textContent = `נכשלו / נסגרו — ${p.name}`;
+  body.replaceChildren(section('fail', 'נכשלו', 'failed'), section('ok', 'נסגרו', 'closed'));
+}
+
+/* ================= drag & drop ================= */
+const board = $('#board');
+
+function cardAfter(cardsEl, y) {
+  const cards = [...cardsEl.querySelectorAll('.card:not(.is-dragging)')];
+  return cards.find(c => { const r = c.getBoundingClientRect(); return y < r.top + r.height / 2; }) || null;
+}
+function clearIndicators() {
+  document.querySelectorAll('.drop-line').forEach(el => el.remove());
+  document.querySelectorAll('.col.over, .zone.over').forEach(el => el.classList.remove('over'));
+}
+function endDrag() {
+  dragId = null;
+  document.body.classList.remove('dragging');
+  document.querySelectorAll('.is-dragging').forEach(el => el.classList.remove('is-dragging'));
+  clearIndicators();
+}
+
+board.addEventListener('dragstart', e => {
+  const card = e.target instanceof Element ? e.target.closest('.card') : null;
+  if (!card) return;
+  dragId = card.dataset.id;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', dragId);
+  // Deferred: changing the DOM inside dragstart can cancel the drag in Chrome.
+  setTimeout(() => {
+    if (dragId !== card.dataset.id) return;
+    card.classList.add('is-dragging');
+    document.body.classList.add('dragging');
+  }, 0);
+});
+board.addEventListener('dragover', e => {
+  if (!dragId) return;
+  const col = e.target.closest('.col');
+  if (!col) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const cardsEl = col.querySelector('.cards');
+  document.querySelectorAll('.col.over').forEach(c => { if (c !== col) c.classList.remove('over'); });
+  col.classList.add('over');
+  const after = cardAfter(cardsEl, e.clientY);
+  let line = cardsEl.querySelector('.drop-line');
+  document.querySelectorAll('.drop-line').forEach(el => { if (el !== line) el.remove(); });
+  if (!line) line = h('div', { class: 'drop-line' });
+  if (line.nextElementSibling !== after || line.parentElement !== cardsEl) cardsEl.insertBefore(line, after);
+});
+board.addEventListener('dragleave', e => {
+  if (!e.relatedTarget || !board.contains(e.relatedTarget)) clearIndicators();
+});
+board.addEventListener('drop', e => {
+  if (!dragId) return;
+  const col = e.target.closest('.col');
+  if (!col) return;
+  e.preventDefault();
+  const after = cardAfter(col.querySelector('.cards'), e.clientY);
+  const id = dragId;
+  endDrag();
+  moveLead(id, col.dataset.status, after ? after.dataset.id : null);
+});
+
+document.querySelectorAll('.zone').forEach(zone => {
+  zone.addEventListener('dragover', e => { if (!dragId) return; e.preventDefault(); zone.classList.add('over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('over'));
+  zone.addEventListener('drop', e => {
+    if (!dragId) return;
+    e.preventDefault();
+    const id = dragId;
+    endDrag();
+    setOutcome(id, zone.dataset.outcome);
+  });
+});
+// Fires on the dragged card when a drag is cancelled or dropped outside any target.
+window.addEventListener('dragend', endDrag);
+
+/* ================= wiring ================= */
+$('#pipelineSelect').addEventListener('change', e => { state.activePipelineId = e.target.value; commit(); });
+$('#addPipelineBtn').addEventListener('click', addPipeline);
+$('#renamePipelineBtn').addEventListener('click', renamePipeline);
+$('#deletePipelineBtn').addEventListener('click', deletePipeline);
+$('#addLeadForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const input = $('#leadName');
+  const name = input.value.trim();
+  if (!name) return;
+  addLead(name);
+  input.value = '';
+  input.focus();
+});
+$('#archiveBtn').addEventListener('click', () => { renderArchive(); $('#archiveDialog').showModal(); });
+$('#archiveClose').addEventListener('click', () => $('#archiveDialog').close());
+$('#switchFileBtn').addEventListener('click', () => showGate('connect', { cancelable: true }));
+
+boot();
+</script>
+</body>
+</html>
