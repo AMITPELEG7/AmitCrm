@@ -228,6 +228,10 @@
   }
   #mailDialog { width: min(640px, 94vw); max-height: 92vh; overflow: auto; }
   #mailInfo { margin: -4px 0 12px; }
+  .cal-msg { margin: 8px 0; padding: 8px 10px; border-radius: 8px; font-size: 14px; background: var(--accent-soft); overflow-wrap: anywhere; }
+  .cal-msg.err { background: var(--fail-soft); color: var(--fail); }
+  #mCalRow .check { margin-bottom: 2px; font-weight: 600; }
+  #mCalRow a, #followCalText a { color: var(--accent); font-weight: 600; }
   .sig-box { margin: 0 0 10px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
   .sig-box .check { margin-bottom: 4px; font-weight: 600; }
   .sig-title { font-weight: 600; margin-bottom: 4px; }
@@ -365,6 +369,7 @@
         <div class="field-head"><label for="fFollowTime">שעת מעקב (לא חובה)</label></div>
         <input id="fFollowTime" type="time">
       </div>
+      <div class="field span-all" id="followCalNote" hidden><div id="followCalText" class="hint"></div></div>
     </div>
 
     <section id="meetingSection" class="meeting" hidden>
@@ -393,6 +398,10 @@
           <textarea id="fMGuests" rows="2" dir="auto"></textarea>
           <div class="hint">כתובות מייל, מופרדות בפסיק או בשורה חדשה</div>
         </div>
+        <div class="field span-all" id="mCalRow">
+          <label class="check" id="mCalCheck"><input type="checkbox" id="mCalOn"><span id="mCalLabel"></span></label>
+          <div id="mCalInfo" class="hint"></div>
+        </div>
       </div>
     </section>
 
@@ -410,9 +419,11 @@
       <div id="notesList"></div>
     </section>
 
+    <p id="leadCalMsg" class="cal-msg" role="status" hidden></p>
     <div class="actions">
       <button id="leadSave" class="primary">שמור</button>
       <button id="leadCancel" type="button">ביטול</button>
+      <button id="leadCalSkip" type="button" hidden>המשך בלי אירוע</button>
       <button id="leadDelete" type="button" class="danger push">מחק ליד</button>
     </div>
   </form>
@@ -518,9 +529,11 @@
         <input id="fuTime" type="time" required>
       </div>
     </div>
+    <p id="followCalMsg" class="cal-msg" role="status" hidden></p>
     <div class="actions">
       <button id="followOk" class="primary"></button>
       <button id="followCancel" type="button">ביטול</button>
+      <button id="followCalSkip" type="button" hidden>המשך בלי אירוע</button>
     </div>
   </form>
 </dialog>
@@ -598,6 +611,8 @@ const iconBtn = (glyph, label, onclick, disabled = false) =>
 //          nextFollowUp: 'YYYY-MM-DD' | '', nextFollowUpTime: 'HH:MM' | '', notes: [{ id, text, at }],
 //          statusId, outcome: null | 'failed' | 'closed', createdAt }      (* = required)
 //          meeting: null | { date: 'YYYY-MM-DD', time: 'HH:MM', endTime: 'HH:MM' | '' (empty = 30 min), location, guests: [email] }
+//          calendar: { meeting?: CalEvent, follow?: CalEvent }   CalEvent = { id, link, key }: the Google Calendar event made for the
+//            meeting / for the follow-up, and the key (JSON of what was sent) that tells whether it is still up to date.
 // Pipeline.onClose: undefined (never set up) | null (switched off) | { action: 'meeting', targetPipelineId }
 //   -> dropping a lead on "נסגר" opens the meeting dialog and, on confirm, moves the lead to the target pipeline's first status.
 // Status.onEnter: undefined (never set up) | null (switched off) | { action: 'meeting' | 'followup' | 'email' | 'summary' }
@@ -638,6 +653,14 @@ function normalizeMailTemplate(t) {
   if (!t || typeof t !== 'object') return undefined;
   const subject = String(t.subject ?? ''), body = String(t.body ?? '');
   return subject.trim() || body.trim() ? { subject, body } : undefined;
+}
+function normalizeCalendar(c) {
+  const out = {};
+  for (const kind of ['meeting', 'follow']) {
+    const e = c && c[kind];
+    if (e && typeof e.id === 'string' && e.id) out[kind] = { id: e.id, link: typeof e.link === 'string' ? e.link : '', key: typeof e.key === 'string' ? e.key : '' };
+  }
+  return out;
 }
 function normalizeMeeting(m) {
   if (!m || typeof m !== 'object' || !/^\d{4}-\d{2}-\d{2}$/.test(m.date) || !/^\d{2}:\d{2}$/.test(m.time)) return null;
@@ -685,6 +708,7 @@ function normalize(d) {
       outcome: l.outcome === 'failed' || l.outcome === 'closed' ? l.outcome : null,
       createdAt: l.createdAt || Date.now(),
       meeting: normalizeMeeting(l.meeting),
+      calendar: normalizeCalendar(l.calendar),
     }));
     const onClose = p.onClose === undefined ? undefined
       : (p.onClose && typeof p.onClose.targetPipelineId === 'string' ? { action: 'meeting', targetPipelineId: p.onClose.targetPipelineId } : null);
@@ -1104,6 +1128,9 @@ function openLead(id, opts = {}) {
   $('#fMEnd').value = m?.endTime ?? '';
   $('#fMLoc').value = m?.location ?? '';
   $('#fMGuests').value = m ? m.guests.join('\n') : (meetingMode ? lead.email : '');
+  calDone = {};
+  calTouched = false;
+  resetLeadCalUi();
   syncStatusRule();
   const note = $('#meetingNote');
   note.hidden = !meetingMode;
@@ -1144,9 +1171,48 @@ function syncStatusRule() {
   const hint = $('#statusHint');
   hint.hidden = !rule;
   if (rule) hint.textContent = needMeeting ? `ב"${rule.status.name}" חובה למלא פרטי פגישה (יום ושעה).`
-    : needFollow ? `ב"${rule.status.name}" חובה לקבוע מועד מעקב הבא (תאריך ושעה).`
+    : needFollow ? `ב"${rule.status.name}" חובה לקבוע מועד מעקב הבא (תאריך ושעה).${googleClientId() ? ` ייווצר אירוע של ${CAL_FOLLOW_MIN} דקות ביומן.` : ''}`
     : `אחרי השמירה ייפתח חלון מייל ("${rule.status.name}"). אפשר לבחור לא לשלוח.`;
+  syncCalendarHints(needMeeting);
 }
+// The calendar parts of the lead dialog: the meeting's "create / update the event" tick box, and a note when the
+// follow-up already has an event. An event is only made for a meeting when the box is ticked, so older leads that
+// already hold meeting details are never invited by accident.
+let calTouched = false; // the user has used the tick box, so it stops following the status
+const calLink = (url, text) => (url ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, text) : null);
+function syncCalendarHints(needMeeting) {
+  const lead = currentLead();
+  const configured = !!googleClientId();
+  const cal = (lead && lead.calendar) || {};
+  $('#mCalCheck').hidden = !configured;
+  $('#mCalLabel').textContent = cal.meeting ? 'עדכן את האירוע ביומן (האורחים יקבלו עדכון אם משהו השתנה)' : 'צור אירוע ביומן ושלח זימון לאורחים';
+  if (!calTouched) $('#mCalOn').checked = !!cal.meeting || meetingMode || !!needMeeting;
+  $('#mCalInfo').replaceChildren(...(configured
+    ? [cal.meeting ? 'יש כבר אירוע ביומן לפגישה הזו. ' : '', calLink(cal.meeting && safeUrl(cal.meeting.link), 'פתח ביומן ↗')]
+    : ['כדי לשלוח זימון ליומן צריך לחבר את גוגל (הכפתור "גוגל" בשורה העליונה).']).filter(Boolean));
+  $('#followCalNote').hidden = !(configured && cal.follow);
+  $('#followCalText').replaceChildren(...[cal.follow ? `יש אירוע ביומן למעקב הזה. הוא מתעדכן כששומרים תאריך ושעה חדשים (בלי שעה הוא לא מתעדכן). ` : '', calLink(cal.follow && safeUrl(cal.follow.link), 'פתח ביומן ↗')].filter(Boolean));
+}
+// Progress and errors of the calendar step, in the lead dialog and in the follow-up popup.
+const calUi = (msgSel, saveSel, skipSel, others) => ({
+  busy(text) {
+    const m = $(msgSel); m.hidden = false; m.className = 'cal-msg'; m.textContent = text;
+    $(saveSel).disabled = true; $(skipSel).hidden = true;
+    for (const o of others) $(o).disabled = true;
+  },
+  fail(text) {
+    const m = $(msgSel); m.hidden = false; m.className = 'cal-msg err'; m.textContent = `לא הצלחתי לעדכן את היומן: ${text}`;
+    $(saveSel).disabled = false; $(saveSel).textContent = 'נסה שוב'; $(skipSel).hidden = false;
+    for (const o of others) $(o).disabled = false;
+  },
+  reset() {
+    $(msgSel).hidden = true; $(skipSel).hidden = true; $(saveSel).disabled = false;
+    for (const o of others) $(o).disabled = false;
+  },
+});
+const LEAD_CAL_UI = calUi('#leadCalMsg', '#leadSave', '#leadCalSkip', ['#leadCancel', '#leadDelete']);
+const FOLLOW_CAL_UI = calUi('#followCalMsg', '#followOk', '#followCalSkip', ['#followCancel']);
+const resetLeadCalUi = () => LEAD_CAL_UI.reset();
 function updateEndHint() {
   const time = $('#fMTime').value;
   const hint = $('#fMEndHint');
@@ -1204,7 +1270,10 @@ async function deleteNote(noteId) {
   renderLeadNotes();
   commit();
 }
-function saveLead() {
+async function saveLead(opts = {}) {
+  if (calBusy) return;
+  // The "continue without an event" button is not a submit, so the form's own checks have to be asked for.
+  if (opts.skipCalendar && !$('#leadForm').reportValidity()) return;
   const v = {
     name: $('#fName').value.trim(), phone: $('#fPhone').value.trim(), email: $('#fEmail').value.trim(),
     company: $('#fCompany').value.trim(), category: $('#fCategory').value.trim(),
@@ -1215,7 +1284,6 @@ function saveLead() {
   for (const [key, id] of [['name', '#fName'], ['phone', '#fPhone']]) {
     if (!v[key]) { $(id).value = ''; $(id).reportValidity(); return; }
   }
-  const p = activePipeline();
   const lead = currentLead();
   let meeting = null;
   if (!$('#meetingSection').hidden) {
@@ -1224,18 +1292,38 @@ function saveLead() {
   }
   const chosen = $('#statusField').hidden ? '' : $('#fStatus').value; // '' = leave as is (also: still outside the board)
   const entering = pendingStatusRule(); // read before the lead moves: the rule of a status it is about to enter
+  const leadId = lead ? lead.id : uid();
+
+  // Calendar first, while the dialog is still open: if Google refuses, nothing has been changed yet, and the user can
+  // try again, or continue without the event. The lead itself is only saved once this step is done.
+  if (googleClientId() && !opts.skipCalendar) {
+    const cal = (lead && lead.calendar) || {};
+    const d = { id: leadId, name: v.name, phone: v.phone, company: v.company, nextFollowUp: v.nextFollowUp, nextFollowUpTime: v.nextFollowUpTime, meeting };
+    const plan = [];
+    if (meeting && $('#mCalOn').checked) plan.push({ kind: 'meeting', entry: cal.meeting, body: meetingEventBody(d), sendUpdates: 'all' });
+    if (v.nextFollowUp && v.nextFollowUpTime && ((entering && entering.action === 'followup') || cal.follow)) {
+      plan.push({ kind: 'follow', entry: cal.follow, body: followEventBody(d), sendUpdates: 'none' });
+    }
+    const invite = plan.find(j => j.kind === 'meeting' && !(calDone.meeting || j.entry) && j.body.attendees.length);
+    if (invite && new Date(invite.body.start.dateTime) < new Date()
+      && !(await askConfirm('המועד כבר עבר', 'הפגישה נקבעה למועד שכבר עבר. האורחים יקבלו זימון על מועד שעבר. ליצור את האירוע בכל זאת?', 'צור בכל זאת'))) return;
+    if (plan.length && !(await runCalendar(plan, LEAD_CAL_UI))) return;
+  }
+
+  const p = activePipeline();
   let saved = lead;
   if (lead) {
     Object.assign(lead, v);
     if (meeting) lead.meeting = meeting;
     if (chosen && (lead.outcome || lead.statusId !== chosen)) placeLead(p, lead, chosen, null);
   } else {
-    const created = { id: uid(), ...v, meeting, notes: [], statusId: chosen || p.statuses[0].id, outcome: null, createdAt: Date.now() };
+    const created = { id: leadId, ...v, meeting, calendar: {}, notes: [], statusId: chosen || p.statuses[0].id, outcome: null, createdAt: Date.now() };
     const first = $('#fFirstNote').value.trim();
     if (first) created.notes.push({ id: uid(), text: first, at: Date.now() });
     p.leads.push(created);
     saved = created;
   }
+  storeCalendar(saved, calDone);
   // A pending move happens only now, on confirm. Handing a lead over to another pipeline places it directly,
   // without running that status's own rule (its meeting details were just collected).
   const move = meetingMode && lead ? pendingMove : null;
@@ -1293,17 +1381,30 @@ function openFollowUp(lead, status, beforeId) {
   $('#followInfo').textContent = `${lead.phone ? `טלפון: ${lead.phone}. ` : ''}כדי להעביר ל"${status.name}" חובה לקבוע מועד מעקב. ביטול משאיר את הליד במקומו.`;
   $('#fuDate').value = lead.nextFollowUp || '';
   $('#fuTime').value = lead.nextFollowUpTime || '';
+  if (googleClientId()) $('#followInfo').textContent += ` ייווצר אירוע של ${CAL_FOLLOW_MIN} דקות ביומן עם השם והטלפון.`;
+  calDone = {};
+  FOLLOW_CAL_UI.reset();
   $('#followOk').textContent = `אשר והעבר ל"${status.name}"`;
   $('#followDialog').showModal();
   $('#fuDate').focus();
 }
-function confirmFollowUp() {
+async function confirmFollowUp(opts = {}) {
+  if (calBusy) return;
+  if (opts.skipCalendar && !$('#followForm').reportValidity()) return;
   const p = activePipeline();
   const t = followPending;
   const lead = p && t && p.leads.find(l => l.id === t.leadId);
+  const date = $('#fuDate').value, time = $('#fuTime').value;
+  // The event comes first (same idea as in the lead dialog): if Google refuses, the lead has not moved yet.
+  if (lead && googleClientId() && !opts.skipCalendar) {
+    const body = followEventBody({ id: lead.id, name: lead.name, phone: lead.phone, company: lead.company, nextFollowUp: date, nextFollowUpTime: time });
+    const plan = [{ kind: 'follow', entry: (lead.calendar || {}).follow, body, sendUpdates: 'none' }];
+    if (!(await runCalendar(plan, FOLLOW_CAL_UI))) return;
+  }
   if (lead) {
-    lead.nextFollowUp = $('#fuDate').value;
-    lead.nextFollowUpTime = $('#fuTime').value;
+    lead.nextFollowUp = date;
+    lead.nextFollowUpTime = time;
+    storeCalendar(lead, calDone);
     placeLead(p, lead, t.statusId, t.beforeId);
   }
   followPending = null;
@@ -1515,7 +1616,9 @@ async function googleApi(url, opts = {}) {
   if (!res.ok) {
     let why = '';
     try { const j = await res.json(); why = (j.error && (j.error.message || j.error.status)) || ''; } catch { /* no JSON body */ }
-    throw new GoogleError(res.status === 403 ? 'forbidden' : 'api', `גוגל החזירה שגיאה ${res.status}${why ? `: ${why}` : ''}`);
+    const err = new GoogleError(res.status === 403 ? 'forbidden' : 'api', `גוגל החזירה שגיאה ${res.status}${why ? `: ${why}` : ''}`);
+    err.status = res.status;
+    throw err;
   }
   return res;
 }
@@ -1666,10 +1769,102 @@ async function calendarInsert(event, sendUpdates = 'none') {
     { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(event) });
   return res.json();
 }
+async function calendarPatch(id, body, sendUpdates = 'none') {
+  const res = await googleApi(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(id)}?sendUpdates=${encodeURIComponent(sendUpdates)}`,
+    { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  return res.json();
+}
 async function calendarDelete(id, sendUpdates = 'none') {
   await googleApi(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(id)}?sendUpdates=${encodeURIComponent(sendUpdates)}`,
     { method: 'DELETE' });
 }
+
+/* ---- calendar events for leads ---- */
+// Two kinds of event, both on the primary calendar:
+//  - meeting: made from the meeting details, with the guests invited (Google emails them the invitation);
+//  - follow:  a short event at the follow-up date and time, with the lead's name and phone in the title.
+// The lead keeps the event's id, so a later change updates that event instead of making another.
+const CAL_FOLLOW_MIN = 15;
+const CAL_EVENTS = 'https://www.googleapis.com/calendar/v3/calendars/primary/events';
+// 'YYYY-MM-DDTHH:MM:00' (local time, which Google reads together with the time zone) for a date + time + minutes.
+function localDateTime(dateIso, time, addMin = 0) {
+  const [y, mo, d] = dateIso.split('-').map(Number), [h, mi] = time.split(':').map(Number);
+  const t = new Date(y, mo - 1, d, h, mi + addMin);
+  return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}T${pad(t.getHours())}:${pad(t.getMinutes())}:00`;
+}
+function eventWhen(dateIso, time, endTime, defaultMin) {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return {
+    start: { dateTime: localDateTime(dateIso, time), timeZone },
+    end: { dateTime: endTime ? localDateTime(dateIso, endTime) : localDateTime(dateIso, time, defaultMin), timeZone },
+  };
+}
+// d = { id, name, phone, company, meeting: { date, time, endTime, location, guests } }
+function meetingEventBody(d) {
+  const m = d.meeting;
+  return {
+    summary: `פגישה עם ${d.name}${d.company ? ` (${d.company})` : ''}`,
+    location: m.location,
+    description: ['נקבע מה-CRM', d.phone ? `טלפון: ${d.phone}` : '', d.company ? `חברה: ${d.company}` : ''].filter(Boolean).join('\n'),
+    ...eventWhen(m.date, m.time, m.endTime, DEFAULT_MEETING_MIN),
+    attendees: m.guests.map(email => ({ email })),
+    reminders: { useDefault: true }, // the reminders your calendar already gives every event
+    extendedProperties: { private: { crmLeadId: d.id } },
+  };
+}
+// d = { id, name, phone, company, nextFollowUp, nextFollowUpTime }
+function followEventBody(d) {
+  return {
+    summary: `חזרה ללקוח: ${d.name}${d.phone ? ` · ${d.phone}` : ''}`,
+    description: ['נקבע מה-CRM', d.phone ? `טלפון: ${d.phone}` : '', d.company ? `חברה: ${d.company}` : ''].filter(Boolean).join('\n'),
+    ...eventWhen(d.nextFollowUp, d.nextFollowUpTime, '', CAL_FOLLOW_MIN),
+    reminders: { useDefault: true },
+    extendedProperties: { private: { crmLeadId: d.id } },
+  };
+}
+// Replacing the guest list would reset everyone's answer, so guests who were already on the event keep theirs.
+function mergeAttendees(want, current = []) {
+  if (!want.length) return [];
+  const byEmail = new Map(current.map(a => [String(a.email || '').toLowerCase(), a]));
+  const out = want.map(w => byEmail.get(w.email.toLowerCase()) || w);
+  for (const a of current) if ((a.organizer || a.self) && !out.includes(a)) out.push(a);
+  return out;
+}
+// Creates the event, or updates the one already made. Returns the entry to keep on the lead: { id, link, key }.
+// Nothing is sent when nothing changed (so guests are not emailed for a save that changed nothing). An event that was
+// deleted in the calendar is made again.
+async function upsertCalendarEvent(entry, body, sendUpdates) {
+  const key = JSON.stringify(body);
+  if (entry && entry.key === key) return entry;
+  if (entry) {
+    let current = null;
+    try { current = await (await googleApi(`${CAL_EVENTS}/${encodeURIComponent(entry.id)}`)).json(); }
+    catch (e) { if (!(e instanceof GoogleError) || ![404, 410].includes(e.status)) throw e; }
+    if (current && current.status !== 'cancelled') {
+      const patch = body.attendees ? { ...body, attendees: mergeAttendees(body.attendees, current.attendees) } : body;
+      const r = await calendarPatch(entry.id, patch, sendUpdates);
+      return { id: r.id || entry.id, link: safeUrl(r.htmlLink) || entry.link || '', key };
+    }
+  }
+  const r = await calendarInsert(body, sendUpdates);
+  return { id: r.id, link: safeUrl(r.htmlLink) || '', key };
+}
+let calBusy = false;
+let calDone = {}; // results already obtained while this dialog is open, so "try again" never repeats a finished step
+// plan = [{ kind: 'meeting' | 'follow', entry, body, sendUpdates }]. Returns true when every step is done, or false
+// after showing the error (ui = { busy(text), fail(text) }).
+async function runCalendar(plan, ui) {
+  calBusy = true;
+  ui.busy(plan.some(j => !(calDone[j.kind] || j.entry)) ? 'יוצר אירוע ביומן…' : 'מעדכן את האירוע ביומן…');
+  try {
+    for (const job of plan) calDone[job.kind] = await upsertCalendarEvent(calDone[job.kind] || job.entry, job.body, job.sendUpdates);
+    return true;
+  } catch (e) {
+    ui.fail(e.message);
+    return false;
+  } finally { calBusy = false; }
+}
+const storeCalendar = (lead, done) => { if (Object.keys(done).length) lead.calendar = { ...(lead.calendar || {}), ...done }; };
 
 /* ---- the connection dialog ---- */
 function setGoogleResult(kind, text, link) {
@@ -2256,7 +2451,7 @@ function renderCard(l) {
     sub.length ? h('div', { class: 'card-sub' }, ...sub.flatMap((s, i) => [i ? ' · ' : null, h('bdi', {}, s)])) : null,
     l.phone ? h('div', { class: 'card-sub' }, h('span', { class: 'ltr' }, l.phone)) : null,
     h('div', { class: 'card-meta' },
-      l.meeting ? h('span', { class: 'chip meet' }, `פגישה: ${fmtIso(l.meeting.date)} ${l.meeting.time}`) : null,
+      l.meeting ? h('span', { class: 'chip meet' }, `פגישה: ${fmtIso(l.meeting.date)} ${l.meeting.time}${l.calendar && l.calendar.meeting ? ' · ביומן' : ''}`) : null,
       fu ? h('span', { class: `chip ${fu.cls}` }, fu.text) : null,
       last ? h('span', { title: relDays(last) }, `פנייה אחרונה: ${fmtDate(last)}`) : h('span', {}, 'אין פנייה עדיין')));
 }
@@ -2363,7 +2558,12 @@ $('#autoOn').addEventListener('change', () => { $('#autoTarget').disabled = !$('
 $('#autoForm').addEventListener('submit', e => { e.preventDefault(); saveAutomation(); });
 $('#autoCancel').addEventListener('click', () => $('#autoDialog').close());
 $('#followForm').addEventListener('submit', e => { e.preventDefault(); confirmFollowUp(); });
-$('#followCancel').addEventListener('click', () => $('#followDialog').close());
+$('#followCancel').addEventListener('click', () => { if (!calBusy) $('#followDialog').close(); });
+$('#followCalSkip').addEventListener('click', () => confirmFollowUp({ skipCalendar: true }));
+$('#followDialog').addEventListener('cancel', e => { if (calBusy) e.preventDefault(); }); // Esc must not hide a calendar step in progress
+$('#leadCalSkip').addEventListener('click', () => saveLead({ skipCalendar: true }));
+$('#mCalOn').addEventListener('change', () => { calTouched = true; });
+$('#leadDialog').addEventListener('cancel', e => { if (calBusy) e.preventDefault(); });
 // Meeting fields: keep the "end time if empty" hint fresh and clear stale custom errors as soon as the user edits.
 for (const sel of ['#fMDate', '#fMTime']) $(sel).addEventListener('input', () => { updateEndHint(); $('#fMEnd').setCustomValidity(''); });
 $('#fMEnd').addEventListener('input', () => $('#fMEnd').setCustomValidity(''));
@@ -2402,7 +2602,7 @@ board.addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.classList.contains('card')) openLead(e.target.dataset.id);
 });
 $('#leadForm').addEventListener('submit', e => { e.preventDefault(); saveLead(); });
-$('#leadCancel').addEventListener('click', () => $('#leadDialog').close());
+$('#leadCancel').addEventListener('click', () => { if (!calBusy) $('#leadDialog').close(); });
 $('#leadDelete').addEventListener('click', async () => {
   const lead = currentLead();
   if (lead && await deleteLead(lead)) $('#leadDialog').close();
