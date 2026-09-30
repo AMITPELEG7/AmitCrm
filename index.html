@@ -159,6 +159,7 @@
   .field-head a { font-size: 12px; color: var(--accent); }
   .field .req { color: var(--fail); }
   .field input, .field textarea { margin: 0; }
+  .field select { margin: 0; width: 100%; }
   textarea {
     width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
     padding: 7px 10px; font: inherit; color: inherit; resize: vertical;
@@ -190,6 +191,29 @@
   @media (max-width: 560px) { .fields.three { grid-template-columns: 1fr; } }
 
   /* ---------- automation dialog + toast ---------- */
+  #importDialog { width: min(720px, 94vw); max-height: 92vh; overflow: auto; }
+  #importDialog h4 { margin: 14px 0 6px; font-size: 14px; }
+  #importFile { width: auto; margin: 0 0 6px; }
+  .imp-target { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 10px 0; }
+  .imp-error { color: var(--fail); margin: 8px 0; }
+  .imp-summary { margin: 10px 0; padding: 8px 10px; border-radius: 8px; background: var(--accent-soft); font-size: 14px; }
+  .imp-summary.warn { background: var(--fail-soft); color: var(--fail); }
+  .imp-summary small { display: block; color: var(--muted); margin-top: 2px; }
+  .imp-preview { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+  .imp-preview table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  .imp-preview th, .imp-preview td { padding: 4px 8px; border-bottom: 1px solid var(--line); text-align: start; white-space: nowrap; }
+  .imp-preview th { background: var(--bg); font-weight: 600; }
+  #impMapBox { margin-top: 10px; font-size: 14px; }
+  #impMapBox summary { cursor: pointer; font-weight: 600; }
+  #impMap { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; margin-top: 8px; }
+  @media (max-width: 560px) { #impMap { grid-template-columns: 1fr; } }
+  /* Keep "import" in view however long the preview and the skipped list get. */
+  .imp-actions {
+    position: sticky; bottom: -20px; margin: 16px -20px -20px; padding: 12px 20px;
+    background: var(--panel); border-top: 1px solid var(--line);
+  }
+  #impSkipped { margin-top: 8px; font-size: 13px; }
+  #impSkipped ul { margin: 6px 0 0; padding-inline-start: 20px; max-height: 160px; overflow: auto; }
   #autoDialog { width: min(560px, 94vw); max-height: 92vh; overflow: auto; }
   #autoDialog h4 { margin: 14px 0 4px; font-size: 14px; }
   #followInfo { margin: -4px 0 12px; }
@@ -246,6 +270,7 @@
     <button id="deletePipelineBtn" type="button" class="danger">מחק</button>
   </div>
   <button id="addLeadBtn" type="button" class="primary">+ ליד חדש</button>
+  <button id="importBtn" type="button">ייבוא CSV</button>
   <div class="spacer"></div>
   <div class="group">
     <button id="archiveBtn" type="button">נכשלו / נסגרו</button>
@@ -272,6 +297,11 @@
     <h3 id="leadTitle"></h3>
     <div id="leadLast" class="lead-meta"></div>
     <div class="fields">
+      <div class="field span-all" id="statusField">
+        <div class="field-head"><label for="fStatus">סטטוס</label></div>
+        <select id="fStatus"></select>
+        <div id="statusHint" class="hint" hidden></div>
+      </div>
       <div class="field">
         <div class="field-head"><label for="fName">שם מלא <span class="req">*</span></label></div>
         <input id="fName" required maxlength="120">
@@ -356,6 +386,32 @@
       <button id="leadDelete" type="button" class="danger push">מחק ליד</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="importDialog">
+  <h3>ייבוא לידים מקובץ CSV</h3>
+  <div id="impStep1">
+    <p class="hint">הקובץ נקרא בדפדפן בלבד ולא נשלח לשום מקום. השורה הראשונה היא כותרות. חובה: שם וטלפון.</p>
+    <input id="importFile" type="file" accept=".csv,.txt,.tsv,text/csv">
+    <div><button id="importTemplate" type="button" class="link">הורד קובץ לדוגמה</button></div>
+  </div>
+  <p id="impError" class="imp-error" role="alert" hidden></p>
+  <div id="impStep2" hidden>
+    <div class="imp-target">
+      <span>ייבוא אל <b id="impPipeline"></b>, בסטטוס:</span>
+      <select id="impStatus" aria-label="סטטוס ללידים המיובאים"></select>
+    </div>
+    <label class="check"><input type="checkbox" id="impSkipDup" checked><span>דלג על מספרי טלפון שכבר קיימים בלידים או כפולים בקובץ</span></label>
+    <div id="impSummary" class="imp-summary"></div>
+    <div class="imp-preview"><table id="impPreview"></table></div>
+    <details id="impMapBox"><summary>התאמת עמודות (לחץ כדי לבדוק או לשנות)</summary><div id="impMap"></div></details>
+    <details id="impSkipped" hidden><summary></summary><ul></ul></details>
+  </div>
+  <div id="impDone" hidden></div>
+  <div class="actions imp-actions">
+    <button id="impGo" type="button" class="primary" hidden></button>
+    <button id="impClose" type="button">סגור</button>
+  </div>
 </dialog>
 
 <dialog id="followDialog">
@@ -549,7 +605,11 @@ function daysAgo(ms) {
   return Math.max(0, Math.round((dayB - dayA) / 86400000));
 }
 const relDays = ms => { const n = daysAgo(ms); return n === 0 ? 'היום' : n === 1 ? 'אתמול' : `לפני ${n} ימים`; };
-const lastContactAt = lead => lead.notes.length ? Math.max(...lead.notes.map(n => n.at)) : null;
+// Notes brought in from a CSV are history, not a contact made today, so they never set "last contact".
+const lastContactAt = lead => {
+  const times = lead.notes.filter(n => !n.imported).map(n => n.at);
+  return times.length ? Math.max(...times) : null;
+};
 function followUpInfo(lead) {
   if (!lead.nextFollowUp) return null;
   const t = todayIso();
@@ -895,16 +955,20 @@ function openLead(id, opts = {}) {
   $('#noteInput').value = '';
   $('#firstNoteWrap').hidden = !!lead;
   $('#notesSection').hidden = !lead;
-  // The meeting section shows while closing a lead here, and for any lead that already has a meeting.
-  const showMeeting = meetingMode || !!(lead && lead.meeting);
+  // Status: hidden while this dialog is a pending drag (the destination is already decided). A lead outside the
+  // board (failed / closed) starts on a "מחוץ ללוח" entry; picking a status puts it back on the board.
+  $('#statusField').hidden = meetingMode;
+  $('#fStatus').replaceChildren(
+    ...(lead && lead.outcome ? [h('option', { value: '' }, `${lead.outcome === 'failed' ? 'נכשל' : 'נסגר'} (מחוץ ללוח)`)] : []),
+    ...p.statuses.map(s => h('option', { value: s.id }, s.name)));
+  $('#fStatus').value = lead ? (lead.outcome ? '' : lead.statusId) : p.statuses[0].id;
   const m = lead?.meeting;
   $('#fMDate').value = m?.date ?? '';
   $('#fMTime').value = m?.time ?? '';
   $('#fMEnd').value = m?.endTime ?? '';
   $('#fMLoc').value = m?.location ?? '';
   $('#fMGuests').value = m ? m.guests.join('\n') : (meetingMode ? lead.email : '');
-  $('#meetingSection').hidden = !showMeeting;
-  for (const sel of ['#fMDate', '#fMTime']) $(sel).required = showMeeting; // a required field inside a hidden section would block the form
+  syncStatusRule();
   const note = $('#meetingNote');
   note.hidden = !meetingMode;
   if (meetingMode) note.textContent = `אחרי האישור הליד עובר ל${pendingMove.label}. ביטול משאיר אותו במקומו.`;
@@ -918,6 +982,34 @@ function openLead(id, opts = {}) {
   renderLeadNotes();
   $('#leadDialog').showModal();
   (meetingMode ? $('#fMDate') : $('#fName')).focus();
+}
+// The rule that applies when the status chosen in the dialog is somewhere the lead is not yet
+// (a new lead, a different status, or coming back from failed / closed).
+function pendingStatusRule() {
+  const p = activePipeline();
+  const lead = currentLead();
+  const sel = $('#fStatus').value;
+  if (!p || meetingMode || !sel) return null;
+  if (lead && !lead.outcome && lead.statusId === sel) return null;
+  const status = p.statuses.find(s => s.id === sel);
+  return status && status.onEnter ? { action: status.onEnter.action, status } : null;
+}
+// Shows and requires exactly what the chosen status needs, so the same rules hold whether a lead
+// arrives by drag, by the status list, or is created straight into that status.
+function syncStatusRule() {
+  const lead = currentLead();
+  const rule = pendingStatusRule();
+  const needMeeting = !!rule && rule.action === 'meeting';
+  const needFollow = !!rule && rule.action === 'followup';
+  const showMeeting = meetingMode || !!(lead && lead.meeting) || needMeeting;
+  $('#meetingSection').hidden = !showMeeting;
+  for (const sel of ['#fMDate', '#fMTime']) $(sel).required = showMeeting; // a required field inside a hidden section would block the form
+  for (const sel of ['#fFollow', '#fFollowTime']) $(sel).required = needFollow;
+  const hint = $('#statusHint');
+  hint.hidden = !rule;
+  if (rule) hint.textContent = needMeeting
+    ? `ב"${rule.status.name}" חובה למלא פרטי פגישה (יום ושעה).`
+    : `ב"${rule.status.name}" חובה לקבוע מועד מעקב הבא (תאריך ושעה).`;
 }
 function updateEndHint() {
   const time = $('#fMTime').value;
@@ -955,7 +1047,7 @@ function renderLeadNotes() {
   // Newest first; equal timestamps fall back to insertion order so the latest-added note still comes first.
   const newestFirst = lead.notes.map((n, i) => ({ n, i })).sort((a, b) => b.n.at - a.n.at || b.i - a.i).map(x => x.n);
   $('#notesList').replaceChildren(...newestFirst.map(n => h('div', { class: 'note' },
-    h('div', { class: 'note-head' }, h('span', {}, fmtDateTime(n.at)), iconBtn('✕', 'מחק הערה', () => deleteNote(n.id))),
+    h('div', { class: 'note-head' }, h('span', {}, fmtDateTime(n.at) + (n.imported ? ' · יובאה מ-CSV' : '')), iconBtn('✕', 'מחק הערה', () => deleteNote(n.id))),
     h('div', { class: 'note-text' }, n.text))));
 }
 function addNote() {
@@ -994,11 +1086,13 @@ function saveLead() {
     meeting = readMeeting();
     if (!meeting) return;
   }
+  const chosen = $('#statusField').hidden ? '' : $('#fStatus').value; // '' = leave as is (also: still outside the board)
   if (lead) {
     Object.assign(lead, v);
     if (meeting) lead.meeting = meeting;
+    if (chosen && (lead.outcome || lead.statusId !== chosen)) placeLead(p, lead, chosen, null);
   } else {
-    const created = { id: uid(), ...v, meeting: null, notes: [], statusId: p.statuses[0].id, outcome: null, createdAt: Date.now() };
+    const created = { id: uid(), ...v, meeting, notes: [], statusId: chosen || p.statuses[0].id, outcome: null, createdAt: Date.now() };
     const first = $('#fFirstNote').value.trim();
     if (first) created.notes.push({ id: uid(), text: first, at: Date.now() });
     p.leads.push(created);
@@ -1130,6 +1224,236 @@ function restoreLead(l) {
   commit();
 }
 
+/* ================= CSV import ================= */
+// The file is read, parsed and previewed in the browser, and only then added as leads.
+const CSV_FIELDS = [
+  { key: 'name', label: 'שם מלא', required: true, aliases: ['שם', 'שם מלא', 'שם ושם משפחה', 'שם הליד', 'שם איש קשר', 'name', 'full name', 'fullname', 'contact', 'contact name'] },
+  { key: 'phone', label: 'טלפון', required: true, aliases: ['טלפון', 'נייד', 'טלפון נייד', 'פלאפון', 'סלולרי', 'מספר טלפון', 'phone', 'mobile', 'cell', 'tel', 'telephone', 'phone number'] },
+  { key: 'email', label: 'אימייל', aliases: ['אימייל', 'מייל', 'דוא"ל', 'דואל', 'כתובת מייל', 'email', 'e-mail', 'mail'] },
+  { key: 'company', label: 'חברה', aliases: ['חברה', 'שם חברה', 'עסק', 'company', 'organization', 'business'] },
+  { key: 'category', label: 'קטגוריה / התמחות', aliases: ['קטגוריה', 'התמחות', 'תחום', 'category', 'specialty', 'specialization', 'industry'] },
+  { key: 'website', label: 'אתר', aliases: ['אתר', 'אתר אינטרנט', 'כתובת אתר', 'website', 'site', 'url', 'web'] },
+  { key: 'followDate', label: 'מועד מעקב הבא', aliases: ['מועד מעקב', 'מועד מעקב הבא', 'מעקב', 'תאריך מעקב', 'follow up', 'follow-up', 'next follow up', 'followup', 'next contact'] },
+  { key: 'notes', label: 'הערות', aliases: ['הערות', 'הערה', 'notes', 'note', 'comments', 'comment'] },
+  { key: 'status', label: 'סטטוס', aliases: ['סטטוס', 'שלב', 'status', 'stage'] },
+];
+const normHeader = s => String(s ?? '').toLowerCase().replace(/[‎‏ "'`._\-\/\\()]+/g, ' ').replace(/\s+/g, ' ').trim();
+for (const f of CSV_FIELDS) f.norm = new Set(f.aliases.map(normHeader));
+
+// Comparable form of a phone number: digits only, +972 / 972 / 00972 become a leading 0, and a mobile number whose
+// leading zero a spreadsheet dropped (5xxxxxxxx) gets it back. Only used for matching; the stored number is untouched.
+function phoneKey(raw) {
+  let d = String(raw ?? '').replace(/\D/g, '');
+  if (d.startsWith('00972')) d = '0' + d.slice(5);
+  else if (d.startsWith('972')) d = '0' + d.slice(3);
+  else if (d.length === 9 && d[0] === '5') d = '0' + d;
+  return d;
+}
+// Day/month/year (Israeli order) or ISO. Returns 'YYYY-MM-DD', or null when it is not a real date.
+function parseDateLoose(raw) {
+  const s = String(raw ?? '').trim();
+  let y, mo, d, m;
+  if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ].*)?$/))) [y, mo, d] = [+m[1], +m[2], +m[3]];
+  else if ((m = s.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2}|\d{4})$/))) [d, mo, y] = [+m[1], +m[2], +m[3] < 100 ? 2000 + +m[3] : +m[3]];
+  else return null;
+  const t = new Date(y, mo - 1, d);
+  return t.getFullYear() === y && t.getMonth() === mo - 1 && t.getDate() === d ? `${y}-${pad(mo)}-${pad(d)}` : null;
+}
+// Excel's "Unicode text" is UTF-16, a Hebrew Windows export is often windows-1255, everything else is UTF-8.
+function decodeCsv(buf) {
+  const b = new Uint8Array(buf);
+  if (b[0] === 0xFF && b[1] === 0xFE) return new TextDecoder('utf-16le').decode(buf);
+  if (b[0] === 0xFE && b[1] === 0xFF) return new TextDecoder('utf-16be').decode(buf);
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); }
+  catch { return new TextDecoder('windows-1255').decode(buf); }
+}
+// The separator is whichever of , ; tab appears most (outside quotes) on the first line.
+function sniffDelimiter(text) {
+  const counts = { ',': 0, ';': 0, '\t': 0 };
+  let inQuotes = false;
+  for (const c of text) {
+    if (c === '"') inQuotes = !inQuotes;
+    else if (!inQuotes && (c === '\n' || c === '\r')) break;
+    else if (!inQuotes && c in counts) counts[c]++;
+  }
+  const [best, n] = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  return n > 0 ? best : ',';
+}
+// RFC 4180: quoted fields may hold separators, line breaks and "" for a quote. Fully empty lines are dropped.
+function parseCsv(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const delim = sniffDelimiter(text);
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQuotes = false; }
+      else field += c;
+    } else if (c === '"' && field === '') inQuotes = true; // a quote only opens a field, so 5" stays literal
+    else if (c === delim) { row.push(field); field = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(field); field = ''; rows.push(row); row = [];
+    } else field += c;
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(r => r.some(x => x.trim() !== ''));
+}
+function autoMap(headers) {
+  const norm = headers.map(normHeader);
+  const mapping = {}, used = new Set();
+  for (const f of CSV_FIELDS) {
+    const i = norm.findIndex((hd, idx) => !used.has(idx) && f.norm.has(hd));
+    if (i >= 0) { mapping[f.key] = i; used.add(i); }
+  }
+  return mapping;
+}
+// Turns CSV rows into leads. Rows without a name or phone (and, optionally, repeated phones) are skipped and listed.
+function buildImport({ rows, mapping, statuses, defaultStatusId, existing, skipDup }) {
+  const cell = (r, key) => (mapping[key] === undefined ? '' : String(r[mapping[key]] ?? '').trim());
+  const seen = new Set(skipDup ? existing : []);
+  const good = [], skipped = [];
+  const stats = { missing: 0, dup: 0, badEmail: 0, badDate: 0, unknownStatus: 0 };
+  rows.forEach((r, i) => {
+    const line = i + 2; // line 1 holds the headers
+    const name = cell(r, 'name'), phone = cell(r, 'phone');
+    if (!name || !phone) {
+      stats.missing++;
+      skipped.push({ line, label: name || phone, reason: !name && !phone ? 'חסרים שם וטלפון' : !name ? 'חסר שם' : 'חסר טלפון' });
+      return;
+    }
+    const key = phoneKey(phone);
+    if (skipDup && key && seen.has(key)) { stats.dup++; skipped.push({ line, label: name, reason: 'הטלפון כבר קיים או כפול בקובץ' }); return; }
+    if (key) seen.add(key);
+    let email = cell(r, 'email');
+    if (email && !EMAIL_RE.test(email)) { stats.badEmail++; email = ''; }
+    let nextFollowUp = '';
+    const followRaw = cell(r, 'followDate');
+    if (followRaw) { const iso = parseDateLoose(followRaw); if (iso) nextFollowUp = iso; else stats.badDate++; }
+    let statusId = defaultStatusId;
+    const statusName = cell(r, 'status');
+    if (statusName) { const s = statuses.find(x => x.name.trim() === statusName); if (s) statusId = s.id; else stats.unknownStatus++; }
+    const note = cell(r, 'notes');
+    good.push({
+      id: uid(), name, phone, email, company: cell(r, 'company'), category: cell(r, 'category'), website: cell(r, 'website'),
+      nextFollowUp, nextFollowUpTime: '', meeting: null,
+      notes: note ? [{ id: uid(), text: note, at: Date.now(), imported: true }] : [],
+      statusId, outcome: null, createdAt: Date.now(),
+    });
+  });
+  return { good, skipped, stats };
+}
+
+let imp = null; // { headers, rows, result }
+function showImportError(msg) {
+  imp = null;
+  const err = $('#impError');
+  err.textContent = msg;
+  err.hidden = false;
+  $('#impStep2').hidden = true;
+  $('#impGo').hidden = true;
+}
+function openImport() {
+  const p = activePipeline();
+  if (!p) return;
+  imp = null;
+  $('#impPipeline').textContent = `"${p.name}"`;
+  $('#impStatus').replaceChildren(...p.statuses.map(s => h('option', { value: s.id }, s.name)));
+  $('#impStep1').hidden = false;
+  for (const id of ['#impStep2', '#impDone', '#impError', '#impGo']) $(id).hidden = true;
+  $('#importFile').value = '';
+  $('#importDialog').showModal();
+}
+async function onImportFile(file) {
+  $('#impError').hidden = true;
+  if (!file) return;
+  if (file.size > 10 * 1024 * 1024) return showImportError('הקובץ גדול מדי (מעל 10MB).');
+  let rows;
+  try { rows = parseCsv(decodeCsv(await file.arrayBuffer())); }
+  catch (e) { return showImportError(`לא הצלחתי לקרוא את הקובץ: ${e.message}`); }
+  if (!rows.length) return showImportError('הקובץ ריק.');
+  if (rows.length < 2) return showImportError('בקובץ יש רק שורת כותרות, בלי לידים.');
+  const headers = rows[0].map(x => x.trim());
+  imp = { headers, rows: rows.slice(1), result: null };
+  const mapping = autoMap(headers);
+  $('#impMap').replaceChildren(...CSV_FIELDS.map(f => h('div', { class: 'auto-row' },
+    h('span', {}, f.label + (f.required ? ' *' : '')),
+    h('select', { 'data-key': f.key, 'aria-label': `עמודה עבור ${f.label}`, onchange: recomputeImport },
+      h('option', { value: '' }, '— לא לייבא —'),
+      ...headers.map((hd, i) => h('option', { value: String(i), selected: mapping[f.key] === i }, hd || `עמודה ${i + 1}`))))));
+  $('#impStep2').hidden = false;
+  $('#impMapBox').open = mapping.name === undefined || mapping.phone === undefined; // only needs attention when a required column was not recognised
+  recomputeImport();
+}
+function recomputeImport() {
+  if (!imp) return;
+  const p = activePipeline();
+  const mapping = {};
+  document.querySelectorAll('#impMap select').forEach(s => { if (s.value !== '') mapping[s.dataset.key] = Number(s.value); });
+  const summary = $('#impSummary'), go = $('#impGo'), skippedBox = $('#impSkipped');
+  if (mapping.name === undefined || mapping.phone === undefined) {
+    imp.result = null;
+    summary.className = 'imp-summary warn';
+    summary.textContent = 'חובה לבחור עמודה לשם ועמודה לטלפון.';
+    go.hidden = true; skippedBox.hidden = true;
+    $('#impPreview').replaceChildren();
+    return;
+  }
+  const existing = new Set(state.pipelines.flatMap(x => x.leads.map(l => phoneKey(l.phone))).filter(Boolean));
+  const res = buildImport({ rows: imp.rows, mapping, statuses: p.statuses, defaultStatusId: $('#impStatus').value, existing, skipDup: $('#impSkipDup').checked });
+  imp.result = res;
+  const st = res.stats;
+  const skippedWhy = [st.missing && `חסר שם או טלפון: ${st.missing}`, st.dup && `טלפון קיים או כפול: ${st.dup}`].filter(Boolean);
+  const cleaned = [st.badEmail && `אימייל לא תקין (נוקה): ${st.badEmail}`, st.badDate && `מועד מעקב לא מזוהה (נוקה): ${st.badDate}`,
+    st.unknownStatus && `סטטוס לא מוכר (נכנס לסטטוס שנבחר): ${st.unknownStatus}`].filter(Boolean);
+  summary.className = 'imp-summary' + (res.good.length ? '' : ' warn');
+  summary.replaceChildren(...[
+    h('div', {}, `${imp.rows.length} שורות בקובץ · ${res.good.length} ייובאו · ${res.skipped.length} ידולגו`),
+    skippedWhy.length ? h('small', {}, `ידולגו: ${skippedWhy.join(' · ')}`) : null,
+    cleaned.length ? h('small', {}, cleaned.join(' · ')) : null,
+  ].filter(Boolean));
+  const cols = CSV_FIELDS.filter(f => mapping[f.key] !== undefined);
+  $('#impPreview').replaceChildren(
+    h('thead', {}, h('tr', {}, ...cols.map(f => h('th', {}, f.label)))),
+    h('tbody', {}, ...imp.rows.slice(0, 5).map(r => h('tr', {}, ...cols.map(f => h('td', { dir: 'auto' }, String(r[mapping[f.key]] ?? '').trim()))))));
+  skippedBox.hidden = !res.skipped.length;
+  if (res.skipped.length) {
+    skippedBox.querySelector('summary').textContent = `שורות שידולגו (${res.skipped.length})`;
+    skippedBox.querySelector('ul').replaceChildren(...res.skipped.slice(0, 100).map(s => h('li', {}, `שורה ${s.line}: ${s.reason}${s.label ? ' · ' + s.label : ''}`)));
+  }
+  go.hidden = !res.good.length;
+  go.textContent = `ייבא ${res.good.length} לידים`;
+}
+function doImport() {
+  const p = activePipeline();
+  if (!p || !imp || !imp.result || !imp.result.good.length) return;
+  const { good, skipped } = imp.result;
+  p.leads.push(...good); // placed directly: a bulk import never opens a status rule's popup
+  commit();
+  for (const id of ['#impStep1', '#impStep2', '#impGo', '#impError']) $(id).hidden = true;
+  const done = $('#impDone');
+  done.hidden = false;
+  done.replaceChildren(h('p', {}, `יובאו ${good.length} לידים אל "${p.name}".`),
+    ...(skipped.length ? [h('p', { class: 'hint' }, `${skipped.length} שורות ידולגו.`)] : []));
+  imp = null;
+}
+const csvCell = v => (/[",\r\n;]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+function downloadTemplate() {
+  const rows = [
+    ['שם מלא', 'טלפון', 'אימייל', 'חברה', 'קטגוריה', 'אתר', 'מועד מעקב הבא', 'הערות', 'סטטוס'],
+    ['דנה כהן', '050-1234567', 'dana@example.com', 'חברת דוגמה', 'שיווק', 'example.com', '15/10/2026', 'הגיעה בהמלצה', ''],
+    ['יוסי לוי', '052-7654321', '', '', '', '', '', '', ''],
+  ];
+  // The BOM makes Excel open Hebrew correctly.
+  const csv = '﻿' + rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+  const a = h('a', { href: URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })), download: 'leads-template.csv' });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
 /* ================= rendering ================= */
 function render() {
   if (!state) return;
@@ -1137,7 +1461,7 @@ function render() {
 
   $('#pipelineSelect').replaceChildren(
     ...state.pipelines.map(x => h('option', { value: x.id, selected: x.id === state.activePipelineId }, x.name)));
-  for (const id of ['pipelineSelect', 'renamePipelineBtn', 'automationBtn', 'deletePipelineBtn', 'addLeadBtn', 'archiveBtn']) {
+  for (const id of ['pipelineSelect', 'renamePipelineBtn', 'automationBtn', 'deletePipelineBtn', 'addLeadBtn', 'importBtn', 'archiveBtn']) {
     $('#' + id).disabled = !p;
   }
   const auto = closeAutomation(p);
@@ -1294,6 +1618,13 @@ for (const sel of ['#fMDate', '#fMTime']) $(sel).addEventListener('input', () =>
 $('#fMEnd').addEventListener('input', () => $('#fMEnd').setCustomValidity(''));
 $('#fMGuests').addEventListener('input', () => $('#fMGuests').setCustomValidity(''));
 $('#addLeadBtn').addEventListener('click', () => openLead(null));
+$('#importBtn').addEventListener('click', openImport);
+$('#importFile').addEventListener('change', e => onImportFile(e.target.files[0]));
+$('#importTemplate').addEventListener('click', downloadTemplate);
+$('#impStatus').addEventListener('change', recomputeImport);
+$('#impSkipDup').addEventListener('change', recomputeImport);
+$('#impGo').addEventListener('click', doImport);
+$('#impClose').addEventListener('click', () => $('#importDialog').close());
 // A click on a card opens it; a drag never produces a click, and buttons/links inside keep their own behaviour.
 board.addEventListener('click', e => {
   const card = e.target.closest('.card');
@@ -1309,6 +1640,7 @@ $('#leadDelete').addEventListener('click', async () => {
   if (lead && await deleteLead(lead)) $('#leadDialog').close();
 });
 $('#fWebsite').addEventListener('input', updateWebsiteLink);
+$('#fStatus').addEventListener('change', syncStatusRule);
 $('#noteAddBtn').addEventListener('click', addNote);
 $('#noteInput').addEventListener('keydown', e => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); addNote(); }
