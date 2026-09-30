@@ -79,12 +79,22 @@
     content: "גרור לכאן"; color: var(--muted); font-size: 13px; text-align: center; padding: 14px 0;
   }
   .card {
-    display: flex; align-items: center; gap: 6px; background: var(--panel); border: 1px solid var(--line);
+    background: var(--panel); border: 1px solid var(--line);
     border-radius: 8px; padding: 10px 12px; box-shadow: var(--shadow); cursor: grab;
   }
+  .card:hover { border-color: var(--accent); }
   .card:active { cursor: grabbing; }
   .card.is-dragging { opacity: .35; }
-  .card-name { flex: 1; overflow-wrap: anywhere; }
+  .card-name { font-weight: 600; overflow-wrap: anywhere; }
+  .card-sub { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+  .ltr { direction: ltr; unicode-bidi: isolate; display: inline-block; }
+  .card-meta {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 6px;
+    font-size: 12px; color: var(--muted);
+  }
+  .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--line); color: var(--muted); }
+  .chip.today { background: var(--accent-soft); color: var(--accent); }
+  .chip.overdue { background: var(--fail-soft); color: var(--fail); }
   .drop-line { height: 3px; border-radius: 2px; background: var(--accent); pointer-events: none; flex: none; }
   .add-col {
     flex: 0 0 200px; border: 2px dashed var(--line); background: none; border-radius: 12px;
@@ -129,8 +139,34 @@
     display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line);
     border-radius: 8px; margin-bottom: 6px;
   }
-  .arch-row span { flex: 1; overflow-wrap: anywhere; }
+  .arch-row .arch-name { flex: 1; overflow-wrap: anywhere; text-align: start; border: 0; background: none; padding: 2px 0; }
+  .arch-row .arch-name:hover { color: var(--accent); text-decoration: underline; }
   .arch-none { color: var(--muted); font-size: 13px; }
+
+  /* ---------- lead dialog ---------- */
+  #leadDialog { width: min(660px, 94vw); max-height: 92vh; overflow: auto; }
+  .lead-meta { margin: -4px 0 14px; color: var(--muted); font-size: 13px; }
+  .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin-bottom: 14px; }
+  @media (max-width: 560px) { .fields { grid-template-columns: 1fr; } }
+  .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .field-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; color: var(--muted); }
+  .field-head a { font-size: 12px; color: var(--accent); }
+  .field .req { color: var(--fail); }
+  .field input, .field textarea { margin: 0; }
+  textarea {
+    width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 10px; font: inherit; color: inherit; resize: vertical;
+  }
+  .notes { border-top: 1px solid var(--line); padding-top: 12px; margin-bottom: 14px; }
+  .notes h4 { margin: 0 0 8px; font-size: 14px; }
+  .note-add { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 10px; }
+  .note-add textarea { flex: 1; }
+  .note { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; }
+  .note-head { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+  .note-head span { flex: 1; }
+  .note-text { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 2px; }
+  .actions .push { margin-inline-start: auto; }
+  .spacer { flex: 1; }
 
   /* ---------- connect gate ---------- */
   #gate { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: grid; place-items: center; padding: 16px; }
@@ -153,10 +189,8 @@
     <button id="renamePipelineBtn" type="button">שנה שם</button>
     <button id="deletePipelineBtn" type="button" class="danger">מחק</button>
   </div>
-  <form id="addLeadForm" class="group grow" autocomplete="off">
-    <input id="leadName" placeholder="שם הליד" aria-label="שם הליד החדש">
-    <button id="addLeadBtn" class="primary">הוסף ליד</button>
-  </form>
+  <button id="addLeadBtn" type="button" class="primary">+ ליד חדש</button>
+  <div class="spacer"></div>
   <div class="group">
     <button id="archiveBtn" type="button">נכשלו / נסגרו</button>
     <span id="saveState" role="status"></span>
@@ -175,6 +209,64 @@
   <h3 id="archiveTitle">נכשלו / נסגרו</h3>
   <div id="archiveBody"></div>
   <div class="actions" style="margin-top:16px"><button id="archiveClose" type="button">סגור</button></div>
+</dialog>
+
+<dialog id="leadDialog">
+  <form id="leadForm" autocomplete="off">
+    <h3 id="leadTitle"></h3>
+    <div id="leadLast" class="lead-meta"></div>
+    <div class="fields">
+      <div class="field">
+        <div class="field-head"><label for="fName">שם מלא <span class="req">*</span></label></div>
+        <input id="fName" required maxlength="120">
+      </div>
+      <div class="field">
+        <div class="field-head"><label for="fPhone">טלפון <span class="req">*</span></label></div>
+        <input id="fPhone" type="tel" required maxlength="40" dir="auto">
+      </div>
+      <div class="field">
+        <div class="field-head"><label for="fEmail">אימייל</label></div>
+        <input id="fEmail" type="email" maxlength="200" dir="auto">
+      </div>
+      <div class="field">
+        <div class="field-head"><label for="fCompany">חברה</label></div>
+        <input id="fCompany" maxlength="120">
+      </div>
+      <div class="field">
+        <div class="field-head"><label for="fCategory">קטגוריה / התמחות</label></div>
+        <input id="fCategory" list="categoryList" maxlength="120">
+        <datalist id="categoryList"></datalist>
+      </div>
+      <div class="field">
+        <div class="field-head"><label for="fWebsite">אתר</label><a id="fWebsiteLink" target="_blank" rel="noopener noreferrer" hidden>פתח ↗</a></div>
+        <input id="fWebsite" inputmode="url" maxlength="300" dir="auto">
+      </div>
+      <div class="field">
+        <div class="field-head"><label for="fFollow">מועד מעקב הבא</label></div>
+        <input id="fFollow" type="date">
+      </div>
+    </div>
+
+    <div id="firstNoteWrap" class="field" style="margin-bottom:14px">
+      <div class="field-head"><label for="fFirstNote">הערה ראשונה (לא חובה)</label></div>
+      <textarea id="fFirstNote" rows="3"></textarea>
+    </div>
+
+    <section id="notesSection" class="notes" hidden>
+      <h4 id="notesTitle">הערות</h4>
+      <div class="note-add">
+        <textarea id="noteInput" rows="2" placeholder="הוסף הערה… (Ctrl+Enter להוספה)" aria-label="הערה חדשה"></textarea>
+        <button id="noteAddBtn" type="button">הוסף הערה</button>
+      </div>
+      <div id="notesList"></div>
+    </section>
+
+    <div class="actions">
+      <button id="leadSave" class="primary">שמור</button>
+      <button id="leadCancel" type="button">ביטול</button>
+      <button id="leadDelete" type="button" class="danger push">מחק ליד</button>
+    </div>
+  </form>
 </dialog>
 
 <dialog id="askDialog">
@@ -215,8 +307,11 @@ const iconBtn = (glyph, label, onclick, disabled = false) =>
   h('button', { class: 'icon', type: 'button', 'aria-label': label, title: label, onclick, disabled }, glyph);
 
 /* ================= data model ================= */
-// state = { version, activePipelineId, pipelines: [{ id, name, statuses: [{id, name}],
-//           leads: [{ id, name, statusId, outcome: null | 'failed' | 'closed', createdAt }] }] }
+// state = { version, activePipelineId, pipelines: [{ id, name, statuses: [{id, name}], leads: [Lead] }] }
+// Lead = { id, name*, phone*, email, company, category, website,
+//          nextFollowUp: 'YYYY-MM-DD' | '', notes: [{ id, text, at }],
+//          statusId, outcome: null | 'failed' | 'closed', createdAt }      (* = required)
+// "Last contact" is not stored: it is the timestamp of the newest note.
 // A lead with an outcome is off the board but keeps its last statusId, so "return to board" restores it.
 const DEFAULT_STATUSES = ['חדש', 'בקשר', 'פגישה', 'הצעת מחיר'];
 
@@ -235,6 +330,12 @@ function normalize(d) {
     const ids = new Set(statuses.map(s => s.id));
     const leads = (p.leads || []).map(l => ({
       ...l, id: l.id || uid(), name: String(l.name ?? ''),
+      phone: String(l.phone ?? ''), email: String(l.email ?? ''), company: String(l.company ?? ''),
+      category: String(l.category ?? ''), website: String(l.website ?? ''),
+      nextFollowUp: /^\d{4}-\d{2}-\d{2}$/.test(l.nextFollowUp) ? l.nextFollowUp : '',
+      notes: (Array.isArray(l.notes) ? l.notes : [])
+        .filter(n => n && typeof n.text === 'string')
+        .map(n => ({ ...n, id: n.id || uid(), at: Number(n.at) || Date.now() })),
       statusId: ids.has(l.statusId) ? l.statusId : statuses[0].id,
       outcome: l.outcome === 'failed' || l.outcome === 'closed' ? l.outcome : null,
       createdAt: l.createdAt || Date.now(),
@@ -249,6 +350,38 @@ let state = null;
 let fileHandle = null;
 let dragId = null;
 const activePipeline = () => (state && state.pipelines.find(p => p.id === state.activePipelineId)) || null;
+
+/* ---- dates & lead helpers ---- */
+const pad = n => String(n).padStart(2, '0');
+const fmtDate = ms => { const d = new Date(ms); return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`; };
+const fmtDateTime = ms => { const d = new Date(ms); return `${fmtDate(ms)} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const fmtIso = iso => iso.split('-').reverse().join('/');
+const todayIso = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+// Whole calendar days between a timestamp and today (rounding absorbs the 23/25-hour daylight-saving days).
+function daysAgo(ms) {
+  const a = new Date(ms), b = new Date();
+  const dayA = new Date(a.getFullYear(), a.getMonth(), a.getDate()), dayB = new Date(b.getFullYear(), b.getMonth(), b.getDate());
+  return Math.max(0, Math.round((dayB - dayA) / 86400000));
+}
+const relDays = ms => { const n = daysAgo(ms); return n === 0 ? 'היום' : n === 1 ? 'אתמול' : `לפני ${n} ימים`; };
+const lastContactAt = lead => lead.notes.length ? Math.max(...lead.notes.map(n => n.at)) : null;
+function followUpInfo(lead) {
+  if (!lead.nextFollowUp) return null;
+  const t = todayIso();
+  if (lead.nextFollowUp < t) return { cls: 'overdue', text: `מעקב: ${fmtIso(lead.nextFollowUp)} (באיחור)` };
+  if (lead.nextFollowUp === t) return { cls: 'today', text: 'מעקב: היום' };
+  return { cls: '', text: `מעקב: ${fmtIso(lead.nextFollowUp)}` };
+}
+// Only http(s) links are ever made clickable; anything else (e.g. "javascript:...") stays plain text.
+function safeUrl(raw) {
+  const t = String(raw).trim();
+  if (!t) return null;
+  if (/^[a-z][a-z0-9+.-]*:(?!\d)/i.test(t) && !/^https?:\/\//i.test(t)) return null;
+  try {
+    const u = new URL(/^https?:\/\//i.test(t) ? t : 'https://' + t);
+    return u.protocol === 'http:' || u.protocol === 'https:' ? u.href : null;
+  } catch { return null; }
+}
 
 /* ================= file storage (File System Access API) ================= */
 const PICKER_TYPES = [{ description: 'קובץ נתוני CRM', accept: { 'application/json': ['.json'] } }];
@@ -500,22 +633,103 @@ async function deleteStatus(s) {
   commit();
 }
 
-function addLead(name) {
-  const p = activePipeline();
-  if (!p || !name) return;
-  p.leads.push({ id: uid(), name, statusId: p.statuses[0].id, outcome: null, createdAt: Date.now() });
-  commit();
-}
-async function renameLead(l) {
-  const name = await askText('שינוי שם ליד', l.name);
-  if (!name) return;
-  l.name = name;
-  commit();
-}
 async function deleteLead(l) {
-  if (!(await askConfirm('מחיקת ליד', `הליד "${l.name}" יימחק. אי אפשר לשחזר.`))) return;
+  if (!(await askConfirm('מחיקת ליד', `הליד "${l.name}" יימחק. אי אפשר לשחזר.`))) return false;
   const p = activePipeline();
   p.leads = p.leads.filter(x => x !== l);
+  commit();
+  return true;
+}
+
+/* ---- lead dialog: create + edit ---- */
+let editingId = null; // null while creating a new lead
+const currentLead = () => (editingId ? activePipeline()?.leads.find(l => l.id === editingId) : null) || null;
+
+function openLead(id) {
+  const p = activePipeline();
+  if (!p) return;
+  const lead = id ? p.leads.find(l => l.id === id) : null;
+  if (id && !lead) return;
+  editingId = lead ? lead.id : null;
+  $('#leadTitle').textContent = lead ? (lead.name || 'ליד ללא שם') : 'ליד חדש';
+  $('#fName').value = lead?.name ?? '';
+  $('#fPhone').value = lead?.phone ?? '';
+  $('#fEmail').value = lead?.email ?? '';
+  $('#fCompany').value = lead?.company ?? '';
+  $('#fCategory').value = lead?.category ?? '';
+  $('#fWebsite').value = lead?.website ?? '';
+  $('#fFollow').value = lead?.nextFollowUp ?? '';
+  $('#fFirstNote').value = '';
+  $('#noteInput').value = '';
+  $('#firstNoteWrap').hidden = !!lead;
+  $('#notesSection').hidden = !lead;
+  $('#leadDelete').hidden = !lead;
+  $('#leadSave').textContent = lead ? 'שמור' : 'צור ליד';
+  const cats = new Set(state.pipelines.flatMap(x => x.leads.map(l => l.category)).filter(Boolean));
+  $('#categoryList').replaceChildren(...[...cats].sort((a, b) => a.localeCompare(b, 'he')).map(c => h('option', { value: c })));
+  updateWebsiteLink();
+  renderLeadNotes();
+  $('#leadDialog').showModal();
+  $('#fName').focus();
+}
+function updateWebsiteLink() {
+  const url = safeUrl($('#fWebsite').value);
+  const a = $('#fWebsiteLink');
+  a.hidden = !url;
+  if (url) a.href = url; else a.removeAttribute('href');
+}
+function renderLeadNotes() {
+  const lead = currentLead();
+  const meta = $('#leadLast');
+  if (!lead) { meta.textContent = ''; return; }
+  const last = lastContactAt(lead);
+  meta.textContent = last ? `פנייה אחרונה: ${fmtDate(last)} (${relDays(last)})` : 'עדיין אין פנייה. הוספת הערה תקבע את תאריך הפנייה האחרונה.';
+  $('#notesTitle').textContent = `הערות (${lead.notes.length})`;
+  // Newest first; equal timestamps fall back to insertion order so the latest-added note still comes first.
+  const newestFirst = lead.notes.map((n, i) => ({ n, i })).sort((a, b) => b.n.at - a.n.at || b.i - a.i).map(x => x.n);
+  $('#notesList').replaceChildren(...newestFirst.map(n => h('div', { class: 'note' },
+    h('div', { class: 'note-head' }, h('span', {}, fmtDateTime(n.at)), iconBtn('✕', 'מחק הערה', () => deleteNote(n.id))),
+    h('div', { class: 'note-text' }, n.text))));
+}
+function addNote() {
+  const lead = currentLead();
+  const input = $('#noteInput');
+  const text = input.value.trim();
+  if (!lead || !text) return;
+  lead.notes.push({ id: uid(), text, at: Date.now() });
+  input.value = '';
+  renderLeadNotes();
+  commit();
+  input.focus();
+}
+async function deleteNote(noteId) {
+  const lead = currentLead();
+  if (!lead || !(await askConfirm('מחיקת הערה', 'ההערה תימחק, וזה עשוי לשנות את תאריך הפנייה האחרונה.'))) return;
+  lead.notes = lead.notes.filter(n => n.id !== noteId);
+  renderLeadNotes();
+  commit();
+}
+function saveLead() {
+  const v = {
+    name: $('#fName').value.trim(), phone: $('#fPhone').value.trim(), email: $('#fEmail').value.trim(),
+    company: $('#fCompany').value.trim(), category: $('#fCategory').value.trim(),
+    website: $('#fWebsite').value.trim(), nextFollowUp: $('#fFollow').value,
+  };
+  // Whitespace-only passes the native "required" check, so blank the field and let the browser flag it.
+  for (const [key, id] of [['name', '#fName'], ['phone', '#fPhone']]) {
+    if (!v[key]) { $(id).value = ''; $(id).reportValidity(); return; }
+  }
+  const p = activePipeline();
+  const lead = currentLead();
+  if (lead) {
+    Object.assign(lead, v);
+  } else {
+    const created = { id: uid(), ...v, notes: [], statusId: p.statuses[0].id, outcome: null, createdAt: Date.now() };
+    const first = $('#fFirstNote').value.trim();
+    if (first) created.notes.push({ id: uid(), text: first, at: Date.now() });
+    p.leads.push(created);
+  }
+  $('#leadDialog').close();
   commit();
 }
 function moveLead(id, statusId, beforeId) {
@@ -549,7 +763,7 @@ function render() {
 
   $('#pipelineSelect').replaceChildren(
     ...state.pipelines.map(x => h('option', { value: x.id, selected: x.id === state.activePipelineId }, x.name)));
-  for (const id of ['pipelineSelect', 'renamePipelineBtn', 'deletePipelineBtn', 'leadName', 'addLeadBtn', 'archiveBtn']) {
+  for (const id of ['pipelineSelect', 'renamePipelineBtn', 'deletePipelineBtn', 'addLeadBtn', 'archiveBtn']) {
     $('#' + id).disabled = !p;
   }
   const archived = p ? p.leads.filter(l => l.outcome).length : 0;
@@ -583,11 +797,16 @@ function renderColumn(p, s, i) {
 }
 
 function renderCard(l) {
-  return h('article', { class: 'card', draggable: true, 'data-id': l.id },
-    h('span', { class: 'card-name' }, l.name),
-    h('span', { class: 'tools' },
-      iconBtn('✎', 'שנה שם', () => renameLead(l)),
-      iconBtn('✕', 'מחק ליד', () => deleteLead(l))));
+  const sub = [l.company, l.category].filter(Boolean);
+  const fu = followUpInfo(l);
+  const last = lastContactAt(l);
+  return h('article', { class: 'card', draggable: true, tabindex: 0, 'data-id': l.id },
+    h('div', { class: 'card-name' }, l.name),
+    sub.length ? h('div', { class: 'card-sub' }, ...sub.flatMap((s, i) => [i ? ' · ' : null, h('bdi', {}, s)])) : null,
+    l.phone ? h('div', { class: 'card-sub' }, h('span', { class: 'ltr' }, l.phone)) : null,
+    h('div', { class: 'card-meta' },
+      fu ? h('span', { class: `chip ${fu.cls}` }, fu.text) : null,
+      last ? h('span', { title: relDays(last) }, `פנייה אחרונה: ${fmtDate(last)}`) : h('span', {}, 'אין פנייה עדיין')));
 }
 
 function renderArchive() {
@@ -599,7 +818,7 @@ function renderArchive() {
     return h('div', { class: `arch-section ${cls}` },
       h('h4', {}, `${title} (${rows.length})`),
       rows.length ? rows.map(l => h('div', { class: 'arch-row' },
-        h('span', {}, l.name),
+        h('button', { type: 'button', class: 'arch-name', title: 'פתח כרטיס ליד', onclick: () => openLead(l.id) }, l.name),
         h('button', { type: 'button', onclick: () => restoreLead(l) }, 'החזר ללוח'),
         h('button', { type: 'button', class: 'danger', onclick: () => deleteLead(l) }, 'מחק')))
         : h('div', { class: 'arch-none' }, 'אין'));
@@ -687,14 +906,25 @@ $('#pipelineSelect').addEventListener('change', e => { state.activePipelineId = 
 $('#addPipelineBtn').addEventListener('click', addPipeline);
 $('#renamePipelineBtn').addEventListener('click', renamePipeline);
 $('#deletePipelineBtn').addEventListener('click', deletePipeline);
-$('#addLeadForm').addEventListener('submit', e => {
-  e.preventDefault();
-  const input = $('#leadName');
-  const name = input.value.trim();
-  if (!name) return;
-  addLead(name);
-  input.value = '';
-  input.focus();
+$('#addLeadBtn').addEventListener('click', () => openLead(null));
+// A click on a card opens it; a drag never produces a click, and buttons/links inside keep their own behaviour.
+board.addEventListener('click', e => {
+  const card = e.target.closest('.card');
+  if (card && !e.target.closest('a, button')) openLead(card.dataset.id);
+});
+board.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.classList.contains('card')) openLead(e.target.dataset.id);
+});
+$('#leadForm').addEventListener('submit', e => { e.preventDefault(); saveLead(); });
+$('#leadCancel').addEventListener('click', () => $('#leadDialog').close());
+$('#leadDelete').addEventListener('click', async () => {
+  const lead = currentLead();
+  if (lead && await deleteLead(lead)) $('#leadDialog').close();
+});
+$('#fWebsite').addEventListener('input', updateWebsiteLink);
+$('#noteAddBtn').addEventListener('click', addNote);
+$('#noteInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); addNote(); }
 });
 $('#archiveBtn').addEventListener('click', () => { renderArchive(); $('#archiveDialog').showModal(); });
 $('#archiveClose').addEventListener('click', () => $('#archiveDialog').close());
