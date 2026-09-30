@@ -168,6 +168,14 @@
   .actions .push { margin-inline-start: auto; }
   .spacer { flex: 1; }
 
+  /* ---------- visible error bar (so a failure is never silent) ---------- */
+  #errorBar {
+    position: fixed; top: 0; inset-inline: 0; z-index: 100; display: flex; align-items: center; gap: 12px;
+    padding: 8px 16px; background: var(--fail); color: #fff; font-size: 14px;
+  }
+  #errorBar span { flex: 1; overflow-wrap: anywhere; }
+  #errorBar button { background: none; border-color: #fff; color: #fff; padding: 3px 10px; }
+
   /* ---------- connect gate ---------- */
   #gate { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: grid; place-items: center; padding: 16px; }
   #gateBox {
@@ -281,6 +289,8 @@
   </form>
 </dialog>
 
+<div id="errorBar" role="alert" hidden></div>
+
 <div id="gate" hidden><div id="gateBox"></div></div>
 
 <script>
@@ -302,6 +312,15 @@ function h(tag, props = {}, ...kids) {
   for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid);
   return el;
 }
+// Any uncaught error is shown in a red bar instead of failing silently.
+function showError(message) {
+  const bar = $('#errorBar');
+  bar.replaceChildren(h('span', {}, `משהו השתבש: ${message}`), h('button', { type: 'button', onclick: () => { bar.hidden = true; } }, 'סגור'));
+  bar.hidden = false;
+}
+window.addEventListener('error', e => showError(e.message || 'שגיאה לא ידועה'));
+window.addEventListener('unhandledrejection', e => showError((e.reason && e.reason.message) || String(e.reason)));
+
 const uid = () => crypto.randomUUID();
 const iconBtn = (glyph, label, onclick, disabled = false) =>
   h('button', { class: 'icon', type: 'button', 'aria-label': label, title: label, onclick, disabled }, glyph);
