@@ -191,6 +191,19 @@
   @media (max-width: 560px) { .fields.three { grid-template-columns: 1fr; } }
 
   /* ---------- automation dialog + toast ---------- */
+  #googleBtn.on { border-color: var(--ok); color: var(--ok); }
+  #googleDialog { width: min(560px, 94vw); max-height: 92vh; overflow: auto; }
+  #googleDialog h4 { margin: 16px 0 6px; font-size: 14px; }
+  .g-status { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; font-size: 14px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--ok); }
+  .dot.wait { background: #d99a00; }
+  code { direction: ltr; unicode-bidi: isolate; display: inline-block; background: var(--bg); padding: 1px 6px; border-radius: 6px; user-select: all; }
+  .g-actions { flex-wrap: wrap; margin-bottom: 6px; }
+  .g-result { margin: 10px 0 0; padding: 8px 10px; border-radius: 8px; font-size: 14px; overflow-wrap: anywhere; }
+  .g-result.ok { background: var(--ok-soft); color: var(--ok); }
+  .g-result.err { background: var(--fail-soft); color: var(--fail); }
+  .g-result.busy { background: var(--accent-soft); }
   #importDialog { width: min(720px, 94vw); max-height: 92vh; overflow: auto; }
   #importDialog h4 { margin: 14px 0 6px; font-size: 14px; }
   #importFile { width: auto; margin: 0 0 6px; }
@@ -274,6 +287,7 @@
   <div class="spacer"></div>
   <div class="group">
     <button id="archiveBtn" type="button">נכשלו / נסגרו</button>
+    <button id="googleBtn" type="button">גוגל</button>
     <span id="saveState" role="status"></span>
     <button id="switchFileBtn" type="button" class="link">החלף קובץ</button>
   </div>
@@ -386,6 +400,29 @@
       <button id="leadDelete" type="button" class="danger push">מחק ליד</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="googleDialog">
+  <h3>חיבור לגוגל</h3>
+  <div id="gStatus" class="g-status"></div>
+  <div class="field">
+    <div class="field-head"><label for="gClientId">מזהה לקוח (Client ID) שיצרת בגוגל</label></div>
+    <input id="gClientId" dir="ltr" placeholder="123456789-abc.apps.googleusercontent.com" autocomplete="off" spellcheck="false">
+  </div>
+  <p class="hint">בשדה Authorized JavaScript origins בגוגל צריכה להופיע בדיוק הכתובת <code id="gOrigin"></code>
+    <button id="gCopyOrigin" type="button" class="link">העתק</button></p>
+  <p id="gWarn" class="imp-error" hidden></p>
+  <div class="actions g-actions">
+    <button id="gConnect" type="button" class="primary">התחבר</button>
+    <button id="gDisconnect" type="button">התנתק</button>
+  </div>
+  <h4>בדיקות</h4>
+  <div class="actions g-actions">
+    <button id="gTestMail" type="button">שלח מייל ניסיון לעצמי</button>
+    <button id="gTestCal" type="button">בדוק יומן (יוצר אירוע ומוחק אותו)</button>
+  </div>
+  <p id="gResult" class="g-result" role="status" hidden></p>
+  <div class="actions" style="margin-top:14px"><button id="gClose" type="button">סגור</button></div>
 </dialog>
 
 <dialog id="importDialog">
@@ -530,7 +567,7 @@ function newPipeline(name) {
 }
 function defaultState() {
   const p = newPipeline('מכירות');
-  return { version: 1, activePipelineId: p.id, pipelines: [p] };
+  return { version: 1, activePipelineId: p.id, pipelines: [p], settings: { googleClientId: '' } };
 }
 function normalizeMeeting(m) {
   if (!m || typeof m !== 'object' || !/^\d{4}-\d{2}-\d{2}$/.test(m.date) || !/^\d{2}:\d{2}$/.test(m.time)) return null;
@@ -584,7 +621,9 @@ function normalize(d) {
   });
   autoWire(pipelines);
   const active = pipelines.some(p => p.id === d.activePipelineId) ? d.activePipelineId : (pipelines[0]?.id ?? null);
-  return { ...d, version: 1, activePipelineId: active, pipelines };
+  // The Google Client ID is not a secret (it only identifies this app to Google), so it lives with the data.
+  const settings = { ...(d.settings && typeof d.settings === 'object' ? d.settings : {}), googleClientId: String(d.settings?.googleClientId ?? '').trim() };
+  return { ...d, version: 1, activePipelineId: active, pipelines, settings };
 }
 
 let state = null;
@@ -741,6 +780,7 @@ async function activate(handle, data) {
   try { await idbSet(HANDLE_KEY, handle); } catch (e) { console.warn('could not remember the file', e); }
   $('#gate').hidden = true;
   render();
+  restoreGoogleSession();
   setSaveState('saved');
 }
 
@@ -1224,6 +1264,279 @@ function restoreLead(l) {
   commit();
 }
 
+/* ================= Google connection ================= */
+// Sign-in uses Google Identity Services' "token model": a popup hands this page a short-lived access token
+// (about an hour). No server and no client secret are involved, and the Client ID is not a secret.
+// Everything below is what the email and calendar automations build on.
+const GOOGLE_SCOPES = {
+  gmail: 'https://www.googleapis.com/auth/gmail.send',
+  calendar: 'https://www.googleapis.com/auth/calendar.events',
+  email: 'https://www.googleapis.com/auth/userinfo.email',
+};
+const GOOGLE_SCOPE_LABEL = { gmail: 'שליחת מייל', calendar: 'יומן', email: 'כתובת המייל שלך' };
+const GOOGLE_SCOPE_STRING = Object.values(GOOGLE_SCOPES).join(' ');
+const GOOGLE_SESSION_KEY = 'amitcrm.googleSession';
+const gg = { client: null, clientId: '', token: '', expiresAt: 0, email: '', settle: null, busy: false };
+
+class GoogleError extends Error {
+  constructor(code, message) { super(message); this.code = code; }
+}
+const googleClientId = () => (state && state.settings && state.settings.googleClientId) || '';
+// A token counts as valid until a minute before it expires.
+const googleConnected = () => !!gg.token && Date.now() < gg.expiresAt - 60000;
+
+// The token also survives a page reload for as long as it is valid (sessionStorage is cleared when the tab closes).
+function saveGoogleSession() {
+  try { sessionStorage.setItem(GOOGLE_SESSION_KEY, JSON.stringify({ clientId: googleClientId(), token: gg.token, expiresAt: gg.expiresAt, email: gg.email })); } catch { /* storage unavailable */ }
+}
+function restoreGoogleSession() {
+  try {
+    const s = JSON.parse(sessionStorage.getItem(GOOGLE_SESSION_KEY) || 'null');
+    if (s && s.token && s.clientId === googleClientId() && s.expiresAt - 60000 > Date.now()) {
+      gg.token = s.token; gg.expiresAt = s.expiresAt; gg.email = s.email || '';
+    }
+  } catch { /* nothing stored */ }
+  updateGoogleUi();
+  if (googleClientId()) loadGis().catch(() => {}); // so the sign-in popup can open without waiting for the script
+}
+function forgetGoogleToken() {
+  gg.token = ''; gg.expiresAt = 0; gg.email = '';
+  try { sessionStorage.removeItem(GOOGLE_SESSION_KEY); } catch { /* storage unavailable */ }
+  updateGoogleUi();
+}
+
+let gisPromise = null;
+function loadGis() {
+  if (window.google && window.google.accounts && window.google.accounts.oauth2) return Promise.resolve();
+  if (!gisPromise) {
+    gisPromise = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://accounts.google.com/gsi/client';
+      s.async = true;
+      s.onload = () => resolve();
+      s.onerror = () => { gisPromise = null; s.remove(); reject(new GoogleError('load', 'לא הצלחתי לטעון את ספריית ההתחברות של גוגל. בדוק חיבור לאינטרנט.')); };
+      document.head.append(s);
+    });
+  }
+  return gisPromise;
+}
+function googleErrorFrom(e) {
+  if (e && e.type === 'popup_closed') return new GoogleError('popup_closed', `החלון נסגר לפני שההתחברות הושלמה. אם הופיעה בו שגיאה origin_mismatch, הכתובת ${location.origin} לא נוספה ל-Authorized JavaScript origins ב-Google Cloud.`);
+  if (e && e.type === 'popup_failed_to_open') return new GoogleError('popup_blocked', 'הדפדפן חסם את חלון ההתחברות. אפשר חלונות קופצים לכתובת הזו ולחץ שוב.');
+  if (e && e.error === 'access_denied') return new GoogleError('denied', 'ההרשאה נדחתה.');
+  if (e && e.error) return new GoogleError('google', `שגיאה מגוגל: ${e.error}${e.error_description ? ` (${e.error_description})` : ''}`);
+  return new GoogleError('unknown', `שגיאת התחברות: ${(e && (e.type || e.message)) || 'לא ידועה'}`);
+}
+
+// Opens Google's sign-in popup and resolves with an access token. Must run right after a click, or the browser blocks the popup.
+async function requestGoogleToken(prompt = '') {
+  const clientId = googleClientId();
+  if (!clientId) throw new GoogleError('no_client', 'עדיין לא הוגדר Client ID של גוגל.');
+  if (location.protocol === 'file:') throw new GoogleError('file', 'גוגל לא מאפשרת התחברות כשהדף נפתח מהדיסק. הפעל את המערכת דרך השרת המקומי (ראה README).');
+  await loadGis();
+  if (!(window.google && google.accounts && google.accounts.oauth2)) throw new GoogleError('load', 'ספריית ההתחברות של גוגל לא נטענה.');
+  return new Promise((resolve, reject) => {
+    if (gg.settle) { reject(new GoogleError('busy', 'חלון התחברות כבר פתוח.')); return; }
+    if (!gg.client || gg.clientId !== clientId) {
+      gg.clientId = clientId;
+      gg.client = google.accounts.oauth2.initTokenClient({
+        client_id: clientId,
+        scope: GOOGLE_SCOPE_STRING,
+        callback: resp => { const s = gg.settle; gg.settle = null; if (s) s(null, resp); },
+        error_callback: err => { const s = gg.settle; gg.settle = null; if (s) s(err); },
+      });
+    }
+    const timer = setTimeout(() => { if (gg.settle) { gg.settle = null; reject(new GoogleError('timeout', 'לא התקבלה תשובה מהחלון של גוגל.')); } }, 180000);
+    gg.settle = (err, resp) => {
+      clearTimeout(timer);
+      if (err) return reject(googleErrorFrom(err));
+      if (resp.error) return reject(googleErrorFrom(resp));
+      // Google lets the user untick individual permissions, so check that every one we need was actually granted.
+      const granted = String(resp.scope || '').split(/\s+/);
+      const missing = Object.entries(GOOGLE_SCOPES).filter(([, scope]) => !granted.includes(scope)).map(([key]) => GOOGLE_SCOPE_LABEL[key]);
+      if (missing.length) return reject(new GoogleError('scope', `חסרות הרשאות: ${missing.join(', ')}. התחבר שוב וסמן את כל ההרשאות.`));
+      gg.token = resp.access_token;
+      gg.expiresAt = Date.now() + Number(resp.expires_in || 3600) * 1000;
+      resolve(gg.token);
+    };
+    try { gg.client.requestAccessToken({ prompt }); }
+    catch (e) { clearTimeout(timer); gg.settle = null; reject(googleErrorFrom(e)); }
+  });
+}
+async function connectGoogle(prompt = '') {
+  await requestGoogleToken(prompt);
+  try {
+    const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: `Bearer ${gg.token}` } });
+    gg.email = r.ok ? ((await r.json()).email || '') : '';
+  } catch { gg.email = ''; }
+  saveGoogleSession();
+  updateGoogleUi();
+  return gg.token;
+}
+// What the automations call before talking to Google: a valid token, asking the user to sign in only when needed.
+async function ensureGoogleToken() {
+  if (googleConnected()) return gg.token;
+  return connectGoogle();
+}
+async function googleApi(url, opts = {}) {
+  const token = await ensureGoogleToken();
+  let res;
+  try { res = await fetch(url, { ...opts, headers: { Authorization: `Bearer ${token}`, ...(opts.headers || {}) } }); }
+  catch { throw new GoogleError('network', 'לא הצלחתי להגיע לגוגל (חיבור לאינטרנט, או שהדפדפן חסם את הבקשה).'); }
+  if (res.status === 401) { forgetGoogleToken(); throw new GoogleError('expired', 'החיבור לגוגל פג. לחץ "התחבר" ונסה שוב.'); }
+  if (!res.ok) {
+    let why = '';
+    try { const j = await res.json(); why = (j.error && (j.error.message || j.error.status)) || ''; } catch { /* no JSON body */ }
+    throw new GoogleError(res.status === 403 ? 'forbidden' : 'api', `גוגל החזירה שגיאה ${res.status}${why ? `: ${why}` : ''}`);
+  }
+  return res;
+}
+
+/* ---- Gmail ---- */
+const utf8 = s => new TextEncoder().encode(s);
+function toBase64(bytes) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+const toBase64Url = bytes => toBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+// RFC 2047: non-ASCII header text becomes UTF-8 "encoded words" (at most 75 characters each) folded onto continuation lines.
+function encodeHeaderText(text) {
+  const clean = String(text).replace(/[\r\n]+/g, ' ').trim();
+  if (/^[\x20-\x7e]*$/.test(clean)) return clean;
+  const words = [];
+  let chunk = '', size = 0;
+  for (const ch of clean) {
+    const n = utf8(ch).length;
+    if (size + n > 45) { words.push(chunk); chunk = ''; size = 0; } // 45 bytes -> 60 base64 chars + 12 = 72
+    chunk += ch; size += n;
+  }
+  if (chunk) words.push(chunk);
+  return words.map(w => `=?UTF-8?B?${toBase64(utf8(w))}?=`).join('\r\n ');
+}
+// A plain-text UTF-8 message. Recipients are validated so lead data can never inject extra headers.
+function buildMime({ to, subject, text }) {
+  const list = [].concat(to).map(a => String(a ?? '').trim()).filter(Boolean);
+  if (!list.length) throw new GoogleError('address', 'חסר נמען.');
+  for (const a of list) if (!EMAIL_RE.test(a) || /[\r\n,<>"]/.test(a)) throw new GoogleError('address', `כתובת המייל "${a}" אינה תקינה.`);
+  const body = toBase64(utf8(String(text ?? '').replace(/\r?\n/g, '\r\n'))).replace(/.{1,76}/g, '$&\r\n');
+  return ['To: ' + list.join(', '), 'Subject: ' + encodeHeaderText(subject ?? ''), 'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', body].join('\r\n');
+}
+async function gmailSend({ to, subject, text }) {
+  const raw = toBase64Url(utf8(buildMime({ to, subject, text })));
+  const res = await googleApi('https://gmail.googleapis.com/gmail/v1/users/me/messages/send',
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ raw }) });
+  return res.json();
+}
+
+/* ---- Calendar ---- */
+async function calendarInsert(event, sendUpdates = 'none') {
+  const res = await googleApi(`https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=${encodeURIComponent(sendUpdates)}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(event) });
+  return res.json();
+}
+async function calendarDelete(id, sendUpdates = 'none') {
+  await googleApi(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(id)}?sendUpdates=${encodeURIComponent(sendUpdates)}`,
+    { method: 'DELETE' });
+}
+
+/* ---- the connection dialog ---- */
+function setGoogleResult(kind, text) {
+  const el = $('#gResult');
+  el.className = `g-result ${kind}`;
+  el.textContent = text;
+  el.hidden = !text;
+}
+function updateGoogleUi() {
+  const btn = $('#googleBtn');
+  if (!btn) return;
+  const id = googleClientId();
+  const connected = googleConnected();
+  btn.textContent = !id ? 'גוגל: לא מוגדר' : connected ? 'גוגל: מחובר' : 'גוגל: לא מחובר';
+  btn.classList.toggle('on', connected);
+  btn.title = connected && gg.email ? gg.email : '';
+  if (!$('#googleDialog').open) return;
+  const until = connected ? new Date(gg.expiresAt).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }) : '';
+  $('#gStatus').replaceChildren(h('span', { class: `dot ${connected ? 'ok' : id ? 'wait' : ''}` }),
+    h('span', {}, !id ? 'עדיין לא הוגדר Client ID' : connected ? `מחובר${gg.email ? `: ${gg.email}` : ''} · תקף עד ${until}` : 'הוגדר, אבל לא מחובר'));
+  $('#gConnect').textContent = connected ? 'התחבר מחדש' : 'התחבר';
+  $('#gConnect').disabled = gg.busy;
+  $('#gDisconnect').disabled = !gg.token || gg.busy;
+  for (const sel of ['#gTestMail', '#gTestCal']) $(sel).disabled = !connected || gg.busy;
+}
+function openGoogleDialog() {
+  $('#gClientId').value = googleClientId();
+  $('#gOrigin').textContent = location.origin;
+  const warn = $('#gWarn');
+  warn.hidden = location.protocol !== 'file:';
+  warn.textContent = 'הדף נפתח מהדיסק (file://) וגוגל לא מאפשרת התחברות כך. הפעל את המערכת דרך השרת המקומי ופתח http://localhost:8765 (ראה README).';
+  setGoogleResult('', '');
+  $('#googleDialog').showModal();
+  updateGoogleUi();
+  if (googleClientId()) loadGis().catch(() => {});
+}
+async function onGoogleConnect() {
+  const value = $('#gClientId').value.trim();
+  if (value !== googleClientId()) {
+    if (!/^[\w.-]+\.apps\.googleusercontent\.com$/.test(value)) {
+      setGoogleResult('err', 'זה לא נראה כמו Client ID. הוא אמור להסתיים ב-.apps.googleusercontent.com (לא Client Secret ולא מספר פרויקט).');
+      return;
+    }
+    state.settings.googleClientId = value;
+    scheduleSave();
+    forgetGoogleToken();
+    gg.client = null;
+  }
+  gg.busy = true;
+  setGoogleResult('busy', 'ממתין לחלון ההתחברות של גוגל…');
+  updateGoogleUi();
+  try {
+    await connectGoogle();
+    setGoogleResult('ok', gg.email ? `מחובר: ${gg.email}` : 'מחובר.');
+  } catch (e) {
+    setGoogleResult('err', e.message);
+  } finally {
+    gg.busy = false;
+    updateGoogleUi();
+  }
+}
+async function onGoogleDisconnect() {
+  const token = gg.token;
+  forgetGoogleToken();
+  try {
+    if (token && window.google && google.accounts && google.accounts.oauth2) {
+      await Promise.race([new Promise(res => google.accounts.oauth2.revoke(token, () => res())), new Promise(res => setTimeout(res, 3000))]);
+    }
+  } catch { /* the token is forgotten locally either way */ }
+  setGoogleResult('ok', 'החיבור נותק וההרשאה בוטלה בגוגל. בחיבור הבא תתבקש לאשר שוב.');
+}
+async function googleTestMail() {
+  gg.busy = true; updateGoogleUi();
+  setGoogleResult('busy', 'שולח מייל ניסיון…');
+  try {
+    if (!gg.email) throw new GoogleError('no_email', 'לא ידועה כתובת המייל שלך. לחץ "התחבר מחדש".');
+    await gmailSend({ to: gg.email, subject: 'בדיקת חיבור מה-CRM', text: `אם קיבלת את המייל הזה, שליחת מיילים מה-CRM עובדת.\n(נשלח ב-${fmtDateTime(Date.now())})` });
+    setGoogleResult('ok', `נשלח מייל ניסיון אל ${gg.email}. בדוק בתיבת הדואר (או בנשלחים).`);
+  } catch (e) { setGoogleResult('err', e.message); }
+  finally { gg.busy = false; updateGoogleUi(); }
+}
+async function googleTestCalendar() {
+  gg.busy = true; updateGoogleUi();
+  setGoogleResult('busy', 'יוצר אירוע ניסיון ביומן…');
+  let created = null;
+  try {
+    const d = new Date(); d.setDate(d.getDate() + 1);
+    const day = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    created = await calendarInsert({ summary: 'בדיקת חיבור מה-CRM (נמחק מיד)', start: { dateTime: `${day}T10:00:00`, timeZone }, end: { dateTime: `${day}T10:15:00`, timeZone } });
+    await calendarDelete(created.id);
+    setGoogleResult('ok', 'נוצר אירוע ניסיון ביומן ונמחק בהצלחה. יצירה ומחיקה עובדות.');
+  } catch (e) {
+    setGoogleResult('err', created ? `האירוע נוצר אבל המחיקה נכשלה: ${e.message} (מחק אותו ידנית מהיומן, "בדיקת חיבור מה-CRM")` : e.message);
+  } finally { gg.busy = false; updateGoogleUi(); }
+}
+
 /* ================= CSV import ================= */
 // The file is read, parsed and previewed in the browser, and only then added as leads.
 const CSV_FIELDS = [
@@ -1468,6 +1781,7 @@ function render() {
   $('.zone.ok .zone-sub').textContent = auto ? `פותח תיאום פגישה ומעביר ל"${auto.target.name}"` : '';
   const archived = p ? p.leads.filter(l => l.outcome).length : 0;
   $('#archiveBtn').textContent = archived ? `נכשלו / נסגרו (${archived})` : 'נכשלו / נסגרו';
+  updateGoogleUi();
 
   const board = $('#board');
   if (!p) {
@@ -1618,6 +1932,16 @@ for (const sel of ['#fMDate', '#fMTime']) $(sel).addEventListener('input', () =>
 $('#fMEnd').addEventListener('input', () => $('#fMEnd').setCustomValidity(''));
 $('#fMGuests').addEventListener('input', () => $('#fMGuests').setCustomValidity(''));
 $('#addLeadBtn').addEventListener('click', () => openLead(null));
+$('#googleBtn').addEventListener('click', openGoogleDialog);
+$('#gConnect').addEventListener('click', onGoogleConnect);
+$('#gDisconnect').addEventListener('click', onGoogleDisconnect);
+$('#gTestMail').addEventListener('click', googleTestMail);
+$('#gTestCal').addEventListener('click', googleTestCalendar);
+$('#gClose').addEventListener('click', () => $('#googleDialog').close());
+$('#gCopyOrigin').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(location.origin); setGoogleResult('ok', `הועתק: ${location.origin}`); }
+  catch { setGoogleResult('err', 'לא הצלחתי להעתיק. סמן את הכתובת והעתק ידנית.'); }
+});
 $('#importBtn').addEventListener('click', openImport);
 $('#importFile').addEventListener('change', e => onImportFile(e.target.files[0]));
 $('#importTemplate').addEventListener('click', downloadTemplate);
