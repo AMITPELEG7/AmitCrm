@@ -107,12 +107,13 @@
   /* ---------- failed / closed drop zones ---------- */
   #dropzones {
     position: fixed; inset-inline: 16px; bottom: 16px; height: 96px; display: flex; gap: 16px;
-    z-index: 30; opacity: 0; visibility: hidden; pointer-events: none;
-    transform: translateY(12px); transition: opacity .15s, transform .15s, visibility .15s;
+    z-index: 30; opacity: 0; pointer-events: none; transition: opacity .15s;
   }
-  body.dragging #dropzones { opacity: 1; visibility: visible; pointer-events: auto; transform: none; }
+  /* Only opacity fades: the zones are droppable from the very first frame of a drag (no visibility/transform delay). */
+  body.dragging #dropzones { opacity: 1; pointer-events: auto; }
   .zone {
-    flex: 1; display: grid; place-items: center; font-size: 22px; font-weight: 700;
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+    font-size: 22px; font-weight: 700; text-align: center; padding: 0 12px;
     border: 3px dashed; border-radius: 16px; background: var(--panel);
   }
   .zone.fail { color: var(--fail); border-color: var(--fail); }
@@ -167,6 +168,41 @@
   .note-text { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 2px; }
   .actions .push { margin-inline-start: auto; }
   .spacer { flex: 1; }
+  .zone-sub { font-size: 13px; font-weight: 400; color: var(--muted); }
+  .chip.meet { background: var(--ok-soft); color: var(--ok); }
+  .hint { font-size: 12px; color: var(--muted); }
+
+  /* ---------- meeting details (closing a lead in the scheduling pipeline) ---------- */
+  .meeting {
+    border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 10px;
+    padding: 12px; margin-bottom: 14px;
+  }
+  .meeting h4 { margin: 0 0 4px; font-size: 14px; }
+  .meeting .hint { margin: 0 0 8px; }
+  .meeting .fields { margin-bottom: 0; }
+  .fields.three { grid-template-columns: 1fr 1fr 1fr; }
+  .span-all { grid-column: 1 / -1; }
+  @media (max-width: 560px) { .fields.three { grid-template-columns: 1fr; } }
+
+  /* ---------- automation dialog + toast ---------- */
+  .check { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; cursor: pointer; }
+  .check input { width: auto; margin: 4px 0 0; }
+  #autoTarget { width: 100%; margin-bottom: 10px; }
+  #toast {
+    position: fixed; bottom: 20px; inset-inline: 0; margin-inline: auto; width: fit-content; max-width: 92vw;
+    display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-radius: 10px;
+    background: #1f2430; color: #fff; z-index: 120; box-shadow: 0 4px 16px rgba(0, 0, 0, .3);
+  }
+  /* The toast sits over the drop zones, so it must never intercept a drop while a drag is in progress. */
+  body.dragging #toast { visibility: hidden; }
+  #toast span { overflow-wrap: anywhere; }
+
+  /* The lead dialog can be tall (meeting section + notes): keep its action buttons in view. */
+  #leadForm > .actions {
+    position: sticky; bottom: -20px; margin: 0 -20px -20px; padding: 12px 20px;
+    background: var(--panel); border-top: 1px solid var(--line);
+  }
+  #toast button { background: none; border-color: #fff; color: #fff; padding: 3px 10px; }
 
   /* ---------- visible error bar (so a failure is never silent) ---------- */
   #errorBar {
@@ -195,6 +231,7 @@
     <select id="pipelineSelect" aria-label="בחירת פייפ-ליין"></select>
     <button id="addPipelineBtn" type="button">+ פייפ-ליין</button>
     <button id="renamePipelineBtn" type="button">שנה שם</button>
+    <button id="automationBtn" type="button">אוטומציה</button>
     <button id="deletePipelineBtn" type="button" class="danger">מחק</button>
   </div>
   <button id="addLeadBtn" type="button" class="primary">+ ליד חדש</button>
@@ -210,7 +247,7 @@
 
 <div id="dropzones" aria-hidden="true">
   <div class="zone fail" data-outcome="failed">נכשל</div>
-  <div class="zone ok" data-outcome="closed">נסגר</div>
+  <div class="zone ok" data-outcome="closed"><span>נסגר</span><small class="zone-sub"></small></div>
 </div>
 
 <dialog id="archiveDialog">
@@ -255,6 +292,35 @@
       </div>
     </div>
 
+    <section id="meetingSection" class="meeting" hidden>
+      <h4>פרטי הפגישה</h4>
+      <p id="meetingNote" class="hint" hidden></p>
+      <div class="fields three">
+        <div class="field">
+          <div class="field-head"><label for="fMDate">יום <span class="req">*</span></label></div>
+          <input id="fMDate" type="date">
+        </div>
+        <div class="field">
+          <div class="field-head"><label for="fMTime">שעת התחלה <span class="req">*</span></label></div>
+          <input id="fMTime" type="time">
+        </div>
+        <div class="field">
+          <div class="field-head"><label for="fMEnd">שעת סיום</label></div>
+          <input id="fMEnd" type="time">
+          <div id="fMEndHint" class="hint"></div>
+        </div>
+        <div class="field span-all">
+          <div class="field-head"><label for="fMLoc">מיקום</label></div>
+          <input id="fMLoc" maxlength="300">
+        </div>
+        <div class="field span-all">
+          <div class="field-head"><label for="fMGuests">אורחים</label></div>
+          <textarea id="fMGuests" rows="2" dir="auto"></textarea>
+          <div class="hint">כתובות מייל, מופרדות בפסיק או בשורה חדשה</div>
+        </div>
+      </div>
+    </section>
+
     <div id="firstNoteWrap" class="field" style="margin-bottom:14px">
       <div class="field-head"><label for="fFirstNote">הערה ראשונה (לא חובה)</label></div>
       <textarea id="fFirstNote" rows="3"></textarea>
@@ -277,6 +343,20 @@
   </form>
 </dialog>
 
+<dialog id="autoDialog">
+  <form id="autoForm">
+    <h3 id="autoTitle"></h3>
+    <label class="check"><input type="checkbox" id="autoOn"><span>כשליד נסגר בפייפ-ליין הזה: פתח חלון תיאום פגישה והעבר את הליד לפייפ-ליין:</span></label>
+    <select id="autoTarget" aria-label="פייפ-ליין יעד"></select>
+    <p class="hint">הליד עובר לסטטוס הראשון בפייפ-ליין שנבחר. "נכשל" לא מושפע.</p>
+    <p id="autoNone" class="hint" hidden>צריך לפחות פייפ-ליין נוסף אחד כדי להפעיל את האוטומציה.</p>
+    <div class="actions">
+      <button class="primary">שמור</button>
+      <button id="autoCancel" type="button">ביטול</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="askDialog">
   <form id="askForm">
     <h3 id="askTitle"></h3>
@@ -289,6 +369,7 @@
   </form>
 </dialog>
 
+<div id="toast" role="status" hidden></div>
 <div id="errorBar" role="alert" hidden></div>
 
 <div id="gate" hidden><div id="gateBox"></div></div>
@@ -330,9 +411,15 @@ const iconBtn = (glyph, label, onclick, disabled = false) =>
 // Lead = { id, name*, phone*, email, company, category, website,
 //          nextFollowUp: 'YYYY-MM-DD' | '', notes: [{ id, text, at }],
 //          statusId, outcome: null | 'failed' | 'closed', createdAt }      (* = required)
+//          meeting: null | { date: 'YYYY-MM-DD', time: 'HH:MM', endTime: 'HH:MM' | '' (empty = 30 min), location, guests: [email] }
+// Pipeline.onClose: undefined (never set up) | null (switched off) | { action: 'meeting', targetPipelineId }
+//   -> dropping a lead on "נסגר" opens the meeting dialog and, on confirm, moves the lead to the target pipeline's first status.
 // "Last contact" is not stored: it is the timestamp of the newest note.
 // A lead with an outcome is off the board but keeps its last statusId, so "return to board" restores it.
 const DEFAULT_STATUSES = ['חדש', 'בקשר', 'פגישה', 'הצעת מחיר'];
+// Pipelines with these exact names are wired together automatically the first time they are seen (see autoWireMeetings).
+const MEETING_PIPELINE = 'תיאום פגישות', SALES_PIPELINE = 'מכירות';
+const DEFAULT_MEETING_MIN = 30;
 
 function newPipeline(name) {
   return { id: uid(), name, statuses: DEFAULT_STATUSES.map(n => ({ id: uid(), name: n })), leads: [] };
@@ -340,6 +427,21 @@ function newPipeline(name) {
 function defaultState() {
   const p = newPipeline('מכירות');
   return { version: 1, activePipelineId: p.id, pipelines: [p] };
+}
+function normalizeMeeting(m) {
+  if (!m || typeof m !== 'object' || !/^\d{4}-\d{2}-\d{2}$/.test(m.date) || !/^\d{2}:\d{2}$/.test(m.time)) return null;
+  return {
+    ...m, date: m.date, time: m.time,
+    endTime: /^\d{2}:\d{2}$/.test(m.endTime) ? m.endTime : '',
+    location: String(m.location ?? ''),
+    guests: (Array.isArray(m.guests) ? m.guests : []).map(String).filter(Boolean),
+  };
+}
+// Only touches a pipeline that was never configured (onClose === undefined), so switching it off sticks.
+function autoWireMeetings(pipelines) {
+  const sched = pipelines.find(p => p.name.trim() === MEETING_PIPELINE);
+  const sales = pipelines.find(p => p.name.trim() === SALES_PIPELINE);
+  if (sched && sales && sched.onClose === undefined) sched.onClose = { action: 'meeting', targetPipelineId: sales.id };
 }
 // Spreads keep unknown fields, so data written by a newer version is not dropped on save.
 function normalize(d) {
@@ -358,9 +460,13 @@ function normalize(d) {
       statusId: ids.has(l.statusId) ? l.statusId : statuses[0].id,
       outcome: l.outcome === 'failed' || l.outcome === 'closed' ? l.outcome : null,
       createdAt: l.createdAt || Date.now(),
+      meeting: normalizeMeeting(l.meeting),
     }));
-    return { ...p, id: p.id || uid(), name: String(p.name || 'ללא שם'), statuses, leads };
+    const onClose = p.onClose === undefined ? undefined
+      : (p.onClose && typeof p.onClose.targetPipelineId === 'string' ? { action: 'meeting', targetPipelineId: p.onClose.targetPipelineId } : null);
+    return { ...p, id: p.id || uid(), name: String(p.name || 'ללא שם'), statuses, leads, onClose };
   });
+  autoWireMeetings(pipelines);
   const active = pipelines.some(p => p.id === d.activePipelineId) ? d.activePipelineId : (pipelines[0]?.id ?? null);
   return { ...d, version: 1, activePipelineId: active, pipelines };
 }
@@ -400,6 +506,32 @@ function safeUrl(raw) {
     const u = new URL(/^https?:\/\//i.test(t) ? t : 'https://' + t);
     return u.protocol === 'http:' || u.protocol === 'https:' ? u.href : null;
   } catch { return null; }
+}
+
+/* ---- meetings & automation helpers ---- */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const timeToMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+// End time used when none is entered: start + 30 minutes (may roll over to the next day).
+function defaultEnd(dateIso, time) {
+  const [y, mo, d] = dateIso ? dateIso.split('-').map(Number) : [2000, 1, 1];
+  const [h, mi] = time.split(':').map(Number);
+  const end = new Date(y, mo - 1, d, h, mi + DEFAULT_MEETING_MIN);
+  return { time: `${pad(end.getHours())}:${pad(end.getMinutes())}`, nextDay: end.getDate() !== d };
+}
+// The pipeline a lead is handed to when it is dropped on "נסגר", or null when this pipeline has no (valid) automation.
+function closeAutomation(p) {
+  if (!p || !p.onClose || !state) return null;
+  const target = state.pipelines.find(x => x.id === p.onClose.targetPipelineId && x !== p);
+  return target && target.statuses.length ? { target } : null;
+}
+let toastTimer = null;
+function showToast(text, actionLabel, onAction) {
+  const el = $('#toast');
+  el.replaceChildren(h('span', {}, text),
+    actionLabel ? h('button', { type: 'button', onclick: () => { el.hidden = true; onAction(); } }, actionLabel) : null);
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, 8000);
 }
 
 /* ================= file storage (File System Access API) ================= */
@@ -600,6 +732,7 @@ async function addPipeline() {
   const p = newPipeline(name);
   state.pipelines.push(p);
   state.activePipelineId = p.id;
+  autoWireMeetings(state.pipelines);
   commit();
 }
 async function renamePipeline() {
@@ -608,6 +741,7 @@ async function renamePipeline() {
   const name = await askText('שינוי שם פייפ-ליין', p.name);
   if (!name) return;
   p.name = name;
+  autoWireMeetings(state.pipelines);
   commit();
 }
 async function deletePipeline() {
@@ -662,15 +796,20 @@ async function deleteLead(l) {
 
 /* ---- lead dialog: create + edit ---- */
 let editingId = null; // null while creating a new lead
+let meetingMode = false; // true while a lead is being closed in a pipeline that has the meeting automation
 const currentLead = () => (editingId ? activePipeline()?.leads.find(l => l.id === editingId) : null) || null;
 
-function openLead(id) {
+function openLead(id, opts = {}) {
+  // Already open (e.g. a second click arriving right after a drop, or a double-click): leave what the user is editing alone.
+  if ($('#leadDialog').open) return;
   const p = activePipeline();
   if (!p) return;
   const lead = id ? p.leads.find(l => l.id === id) : null;
   if (id && !lead) return;
   editingId = lead ? lead.id : null;
-  $('#leadTitle').textContent = lead ? (lead.name || 'ליד ללא שם') : 'ליד חדש';
+  const auto = lead && opts.meeting ? closeAutomation(p) : null;
+  meetingMode = !!auto;
+  $('#leadTitle').textContent = meetingMode ? `תיאום פגישה: ${lead.name}` : lead ? (lead.name || 'ליד ללא שם') : 'ליד חדש';
   $('#fName').value = lead?.name ?? '';
   $('#fPhone').value = lead?.phone ?? '';
   $('#fEmail').value = lead?.email ?? '';
@@ -682,14 +821,49 @@ function openLead(id) {
   $('#noteInput').value = '';
   $('#firstNoteWrap').hidden = !!lead;
   $('#notesSection').hidden = !lead;
-  $('#leadDelete').hidden = !lead;
-  $('#leadSave').textContent = lead ? 'שמור' : 'צור ליד';
+  // The meeting section shows while closing a lead here, and for any lead that already has a meeting.
+  const showMeeting = meetingMode || !!(lead && lead.meeting);
+  const m = lead?.meeting;
+  $('#fMDate').value = m?.date ?? '';
+  $('#fMTime').value = m?.time ?? '';
+  $('#fMEnd').value = m?.endTime ?? '';
+  $('#fMLoc').value = m?.location ?? '';
+  $('#fMGuests').value = m ? m.guests.join('\n') : (meetingMode ? lead.email : '');
+  $('#meetingSection').hidden = !showMeeting;
+  for (const sel of ['#fMDate', '#fMTime']) $(sel).required = showMeeting; // a required field inside a hidden section would block the form
+  const note = $('#meetingNote');
+  note.hidden = !meetingMode;
+  if (meetingMode) note.textContent = `אחרי האישור הליד עובר ל"${auto.target.name}" ‹ ${auto.target.statuses[0].name}. ביטול משאיר אותו במקומו.`;
+  for (const sel of ['#fMEnd', '#fMGuests']) $(sel).setCustomValidity('');
+  updateEndHint();
+  $('#leadDelete').hidden = !lead || meetingMode;
+  $('#leadSave').textContent = meetingMode ? `תאם פגישה והעבר ל"${auto.target.name}"` : lead ? 'שמור' : 'צור ליד';
   const cats = new Set(state.pipelines.flatMap(x => x.leads.map(l => l.category)).filter(Boolean));
   $('#categoryList').replaceChildren(...[...cats].sort((a, b) => a.localeCompare(b, 'he')).map(c => h('option', { value: c })));
   updateWebsiteLink();
   renderLeadNotes();
   $('#leadDialog').showModal();
-  $('#fName').focus();
+  (meetingMode ? $('#fMDate') : $('#fName')).focus();
+}
+function updateEndHint() {
+  const time = $('#fMTime').value;
+  const hint = $('#fMEndHint');
+  if (!time) { hint.textContent = `אם ריק: ${DEFAULT_MEETING_MIN} דקות אחרי ההתחלה`; return; }
+  const end = defaultEnd($('#fMDate').value, time);
+  hint.textContent = `אם ריק: ${end.time}${end.nextDay ? ' (למחרת)' : ''}`;
+}
+// Returns the validated meeting object, or null after flagging the problem field.
+function readMeeting() {
+  const date = $('#fMDate').value, time = $('#fMTime').value, endTime = $('#fMEnd').value;
+  const fail = (el, msg) => { el.setCustomValidity(msg); el.reportValidity(); return null; };
+  if (!date || !time) return fail($(date ? '#fMTime' : '#fMDate'), 'יש למלא יום ושעה');
+  if (endTime && timeToMin(endTime) <= timeToMin(time)) return fail($('#fMEnd'), 'שעת הסיום חייבת להיות אחרי שעת ההתחלה');
+  const seen = new Set();
+  const guests = $('#fMGuests').value.split(/[\s,;]+/).filter(Boolean)
+    .filter(g => { const k = g.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+  const bad = guests.find(g => !EMAIL_RE.test(g));
+  if (bad) return fail($('#fMGuests'), `כתובת המייל "${bad}" אינה תקינה`);
+  return { date, time, endTime, location: $('#fMLoc').value.trim(), guests };
 }
 function updateWebsiteLink() {
   const url = safeUrl($('#fWebsite').value);
@@ -740,16 +914,34 @@ function saveLead() {
   }
   const p = activePipeline();
   const lead = currentLead();
+  let meeting = null;
+  if (!$('#meetingSection').hidden) {
+    meeting = readMeeting();
+    if (!meeting) return;
+  }
   if (lead) {
     Object.assign(lead, v);
+    if (meeting) lead.meeting = meeting;
   } else {
-    const created = { id: uid(), ...v, notes: [], statusId: p.statuses[0].id, outcome: null, createdAt: Date.now() };
+    const created = { id: uid(), ...v, meeting: null, notes: [], statusId: p.statuses[0].id, outcome: null, createdAt: Date.now() };
     const first = $('#fFirstNote').value.trim();
     if (first) created.notes.push({ id: uid(), text: first, at: Date.now() });
     p.leads.push(created);
   }
+  // Closing in a pipeline with the meeting automation: the lead leaves it and lands in the target's first status.
+  const auto = meetingMode && lead ? closeAutomation(p) : null;
+  if (auto) {
+    p.leads = p.leads.filter(l => l !== lead);
+    lead.statusId = auto.target.statuses[0].id;
+    lead.outcome = null;
+    auto.target.leads.push(lead);
+  }
   $('#leadDialog').close();
   commit();
+  if (auto) {
+    showToast(`הליד "${lead.name}" הועבר ל"${auto.target.name}" ‹ ${auto.target.statuses[0].name}`, `הצג את "${auto.target.name}"`,
+      () => { state.activePipelineId = auto.target.id; commit(); });
+  }
 }
 function moveLead(id, statusId, beforeId) {
   const p = activePipeline();
@@ -768,6 +960,34 @@ function setOutcome(id, outcome) {
   lead.outcome = outcome;
   commit();
 }
+// A drop on "נסגר" in a pipeline with the meeting automation opens the meeting dialog instead of just closing the lead.
+function dropOutcome(id, outcome) {
+  if (outcome === 'closed' && closeAutomation(activePipeline())) { openLead(id, { meeting: true }); return; }
+  setOutcome(id, outcome);
+}
+
+/* ---- automation settings ---- */
+function openAutomation() {
+  const p = activePipeline();
+  if (!p) return;
+  const others = state.pipelines.filter(x => x !== p);
+  const current = closeAutomation(p);
+  $('#autoTitle').textContent = `אוטומציה בסגירה: ${p.name}`;
+  $('#autoTarget').replaceChildren(...others.map(x => h('option', { value: x.id, selected: !!current && current.target === x }, x.name)));
+  $('#autoOn').checked = !!current;
+  $('#autoOn').disabled = !others.length;
+  $('#autoNone').hidden = others.length > 0;
+  $('#autoTarget').disabled = !current;
+  $('#autoDialog').showModal();
+}
+function saveAutomation() {
+  const p = activePipeline();
+  const target = $('#autoTarget').value;
+  p.onClose = $('#autoOn').checked && target ? { action: 'meeting', targetPipelineId: target } : null;
+  $('#autoDialog').close();
+  commit();
+}
+
 function restoreLead(l) {
   const p = activePipeline();
   if (!p.statuses.some(s => s.id === l.statusId)) l.statusId = p.statuses[0].id;
@@ -782,9 +1002,11 @@ function render() {
 
   $('#pipelineSelect').replaceChildren(
     ...state.pipelines.map(x => h('option', { value: x.id, selected: x.id === state.activePipelineId }, x.name)));
-  for (const id of ['pipelineSelect', 'renamePipelineBtn', 'deletePipelineBtn', 'addLeadBtn', 'archiveBtn']) {
+  for (const id of ['pipelineSelect', 'renamePipelineBtn', 'automationBtn', 'deletePipelineBtn', 'addLeadBtn', 'archiveBtn']) {
     $('#' + id).disabled = !p;
   }
+  const auto = closeAutomation(p);
+  $('.zone.ok .zone-sub').textContent = auto ? `פותח תיאום פגישה ומעביר ל"${auto.target.name}"` : '';
   const archived = p ? p.leads.filter(l => l.outcome).length : 0;
   $('#archiveBtn').textContent = archived ? `נכשלו / נסגרו (${archived})` : 'נכשלו / נסגרו';
 
@@ -824,6 +1046,7 @@ function renderCard(l) {
     sub.length ? h('div', { class: 'card-sub' }, ...sub.flatMap((s, i) => [i ? ' · ' : null, h('bdi', {}, s)])) : null,
     l.phone ? h('div', { class: 'card-sub' }, h('span', { class: 'ltr' }, l.phone)) : null,
     h('div', { class: 'card-meta' },
+      l.meeting ? h('span', { class: 'chip meet' }, `פגישה: ${fmtIso(l.meeting.date)} ${l.meeting.time}`) : null,
       fu ? h('span', { class: `chip ${fu.cls}` }, fu.text) : null,
       last ? h('span', { title: relDays(last) }, `פנייה אחרונה: ${fmtDate(last)}`) : h('span', {}, 'אין פנייה עדיין')));
 }
@@ -914,7 +1137,7 @@ document.querySelectorAll('.zone').forEach(zone => {
     e.preventDefault();
     const id = dragId;
     endDrag();
-    setOutcome(id, zone.dataset.outcome);
+    dropOutcome(id, zone.dataset.outcome);
   });
 });
 // Fires on the dragged card when a drag is cancelled or dropped outside any target.
@@ -925,6 +1148,14 @@ $('#pipelineSelect').addEventListener('change', e => { state.activePipelineId = 
 $('#addPipelineBtn').addEventListener('click', addPipeline);
 $('#renamePipelineBtn').addEventListener('click', renamePipeline);
 $('#deletePipelineBtn').addEventListener('click', deletePipeline);
+$('#automationBtn').addEventListener('click', openAutomation);
+$('#autoOn').addEventListener('change', () => { $('#autoTarget').disabled = !$('#autoOn').checked; });
+$('#autoForm').addEventListener('submit', e => { e.preventDefault(); saveAutomation(); });
+$('#autoCancel').addEventListener('click', () => $('#autoDialog').close());
+// Meeting fields: keep the "end time if empty" hint fresh and clear stale custom errors as soon as the user edits.
+for (const sel of ['#fMDate', '#fMTime']) $(sel).addEventListener('input', () => { updateEndHint(); $('#fMEnd').setCustomValidity(''); });
+$('#fMEnd').addEventListener('input', () => $('#fMEnd').setCustomValidity(''));
+$('#fMGuests').addEventListener('input', () => $('#fMGuests').setCustomValidity(''));
 $('#addLeadBtn').addEventListener('click', () => openLead(null));
 // A click on a card opens it; a drag never produces a click, and buttons/links inside keep their own behaviour.
 board.addEventListener('click', e => {
