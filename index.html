@@ -204,6 +204,7 @@
   .g-result.ok { background: var(--ok-soft); color: var(--ok); }
   .g-result.err { background: var(--fail-soft); color: var(--fail); }
   .g-result.busy { background: var(--accent-soft); }
+  .g-result a { color: inherit; font-weight: 600; text-decoration: underline; }
   #importDialog { width: min(720px, 94vw); max-height: 92vh; overflow: auto; }
   #importDialog h4 { margin: 14px 0 6px; font-size: 14px; }
   #importFile { width: auto; margin: 0 0 6px; }
@@ -419,7 +420,8 @@
   <h4>בדיקות</h4>
   <div class="actions g-actions">
     <button id="gTestMail" type="button">שלח מייל ניסיון לעצמי</button>
-    <button id="gTestCal" type="button">בדוק יומן (יוצר אירוע ומוחק אותו)</button>
+    <button id="gTestCal" type="button">בדוק יומן (יוצר אירוע ניסיון למחר ב-10:00)</button>
+    <button id="gDelTest" type="button" hidden>מחק את אירוע הניסיון</button>
   </div>
   <p id="gResult" class="g-result" role="status" hidden></p>
   <div class="actions" style="margin-top:14px"><button id="gClose" type="button">סגור</button></div>
@@ -1276,7 +1278,7 @@ const GOOGLE_SCOPES = {
 const GOOGLE_SCOPE_LABEL = { gmail: 'שליחת מייל', calendar: 'יומן', email: 'כתובת המייל שלך' };
 const GOOGLE_SCOPE_STRING = Object.values(GOOGLE_SCOPES).join(' ');
 const GOOGLE_SESSION_KEY = 'amitcrm.googleSession';
-const gg = { client: null, clientId: '', token: '', expiresAt: 0, email: '', settle: null, busy: false };
+const gg = { client: null, clientId: '', token: '', expiresAt: 0, email: '', settle: null, busy: false, testEventId: '' };
 
 class GoogleError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -1442,10 +1444,10 @@ async function calendarDelete(id, sendUpdates = 'none') {
 }
 
 /* ---- the connection dialog ---- */
-function setGoogleResult(kind, text) {
+function setGoogleResult(kind, text, link) {
   const el = $('#gResult');
   el.className = `g-result ${kind}`;
-  el.textContent = text;
+  el.replaceChildren(text, ...(link ? [' ', h('a', { href: link, target: '_blank', rel: 'noopener noreferrer' }, 'פתח ביומן ↗')] : []));
   el.hidden = !text;
 }
 function updateGoogleUi() {
@@ -1464,6 +1466,8 @@ function updateGoogleUi() {
   $('#gConnect').disabled = gg.busy;
   $('#gDisconnect').disabled = !gg.token || gg.busy;
   for (const sel of ['#gTestMail', '#gTestCal']) $(sel).disabled = !connected || gg.busy;
+  $('#gDelTest').hidden = !gg.testEventId;
+  $('#gDelTest').disabled = !connected || gg.busy;
 }
 function openGoogleDialog() {
   $('#gClientId').value = googleClientId();
@@ -1524,16 +1528,32 @@ async function googleTestMail() {
 async function googleTestCalendar() {
   gg.busy = true; updateGoogleUi();
   setGoogleResult('busy', 'יוצר אירוע ניסיון ביומן…');
-  let created = null;
   try {
     const d = new Date(); d.setDate(d.getDate() + 1);
     const day = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    created = await calendarInsert({ summary: 'בדיקת חיבור מה-CRM (נמחק מיד)', start: { dateTime: `${day}T10:00:00`, timeZone }, end: { dateTime: `${day}T10:15:00`, timeZone } });
-    await calendarDelete(created.id);
-    setGoogleResult('ok', 'נוצר אירוע ניסיון ביומן ונמחק בהצלחה. יצירה ומחיקה עובדות.');
+    // The event stays in the calendar so it can be seen; "מחק את אירוע הניסיון" removes it (and proves deleting works).
+    const created = await calendarInsert({
+      summary: 'בדיקת חיבור מה-CRM', description: 'אירוע ניסיון שנוצר מה-CRM. אפשר למחוק.',
+      start: { dateTime: `${day}T10:00:00`, timeZone }, end: { dateTime: `${day}T10:15:00`, timeZone },
+    });
+    gg.testEventId = created.id;
+    setGoogleResult('ok', `נוצר אירוע ביומן הראשי שלך: מחר (${fmtIso(day)}) ב-10:00, "בדיקת חיבור מה-CRM".`, safeUrl(created.htmlLink));
   } catch (e) {
-    setGoogleResult('err', created ? `האירוע נוצר אבל המחיקה נכשלה: ${e.message} (מחק אותו ידנית מהיומן, "בדיקת חיבור מה-CRM")` : e.message);
+    setGoogleResult('err', e.message);
+  } finally { gg.busy = false; updateGoogleUi(); }
+}
+async function googleDeleteTestEvent() {
+  const id = gg.testEventId;
+  if (!id) return;
+  gg.busy = true; updateGoogleUi();
+  setGoogleResult('busy', 'מוחק את אירוע הניסיון…');
+  try {
+    await calendarDelete(id);
+    gg.testEventId = '';
+    setGoogleResult('ok', 'אירוע הניסיון נמחק מהיומן. יצירה ומחיקה של אירועים עובדות.');
+  } catch (e) {
+    setGoogleResult('err', `לא הצלחתי למחוק: ${e.message}`);
   } finally { gg.busy = false; updateGoogleUi(); }
 }
 
@@ -1937,6 +1957,7 @@ $('#gConnect').addEventListener('click', onGoogleConnect);
 $('#gDisconnect').addEventListener('click', onGoogleDisconnect);
 $('#gTestMail').addEventListener('click', googleTestMail);
 $('#gTestCal').addEventListener('click', googleTestCalendar);
+$('#gDelTest').addEventListener('click', googleDeleteTestEvent);
 $('#gClose').addEventListener('click', () => $('#googleDialog').close());
 $('#gCopyOrigin').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(location.origin); setGoogleResult('ok', `הועתק: ${location.origin}`); }
