@@ -234,6 +234,12 @@
   #autoDialog { width: min(560px, 94vw); max-height: 92vh; overflow: auto; }
   #autoDialog h4 { margin: 14px 0 4px; font-size: 14px; }
   #followInfo { margin: -4px 0 12px; }
+  .auto-item { margin-bottom: 6px; }
+  .auto-tpl { margin: 2px 0 10px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
+  .auto-tpl .hint { margin-bottom: 6px; }
+  .auto-tpl input, .auto-tpl textarea { width: 100%; margin: 0 0 6px; }
+  .tpl-vars { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 13px; }
+  .tpl-vars .link { padding: 2px 0; }
   .auto-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
   .auto-row > span { flex: 1; overflow-wrap: anywhere; }
   .auto-row select { flex: 1.4; min-width: 0; }
@@ -460,6 +466,7 @@
   <form id="mailForm" autocomplete="off">
     <h3 id="mailTitle"></h3>
     <p id="mailInfo" class="hint"></p>
+    <p id="mailTpl" class="hint"></p>
     <div class="fields one">
       <div class="field">
         <div class="field-head"><label for="mTo">אל <span class="req">*</span></label></div>
@@ -582,6 +589,8 @@ const iconBtn = (glyph, label, onclick, disabled = false) =>
 // Status.onEnter: undefined (never set up) | null (switched off) | { action: 'meeting' | 'followup' | 'email' | 'summary' }
 //   -> dragging a lead into that status opens the action's popup first; the lead only moves once it is confirmed
 //      (meeting, followup). For 'email' and 'summary' the lead moves first and the popup only offers to send an email.
+// Status.mailTemplate: undefined | { subject, body } -> the default text of that status's email popup. It may hold
+//   fields like {שם פרטי} that are filled from the lead when the popup opens (see TEMPLATE_VARS).
 // "Last contact" is not stored: it is the timestamp of the newest note.
 // A lead with an outcome is off the board but keeps its last statusId, so "return to board" restores it.
 const DEFAULT_STATUSES = ['חדש', 'בקשר', 'פגישה', 'הצעת מחיר'];
@@ -598,8 +607,8 @@ const STATUS_RULES = [
 const RULE_ACTIONS = {
   meeting: 'פתח פרטי פגישה',
   followup: 'דרוש מועד מעקב הבא (תאריך ושעה)',
-  email: 'פתח חלון מייל (הסטטוס משתנה בכל מקרה)',
-  summary: 'פתח חלון סיכום פגישה (הסטטוס משתנה בכל מקרה)',
+  email: 'פתח חלון מייל',
+  summary: 'פתח חלון סיכום פגישה',
 };
 // These two never hold a lead back: the lead moves first, and the popup only decides whether an email goes out.
 const MAIL_ACTIONS = new Set(['email', 'summary']);
@@ -610,6 +619,11 @@ function newPipeline(name) {
 function defaultState() {
   const p = newPipeline('מכירות');
   return { version: 1, activePipelineId: p.id, pipelines: [p], settings: { googleClientId: '' } };
+}
+function normalizeMailTemplate(t) {
+  if (!t || typeof t !== 'object') return undefined;
+  const subject = String(t.subject ?? ''), body = String(t.body ?? '');
+  return subject.trim() || body.trim() ? { subject, body } : undefined;
 }
 function normalizeMeeting(m) {
   if (!m || typeof m !== 'object' || !/^\d{4}-\d{2}-\d{2}$/.test(m.date) || !/^\d{2}:\d{2}$/.test(m.time)) return null;
@@ -640,6 +654,7 @@ function normalize(d) {
     const statuses = (p.statuses || []).map(s => ({
       ...s, id: s.id || uid(), name: String(s.name ?? ''),
       onEnter: s.onEnter === undefined ? undefined : (s.onEnter && RULE_ACTIONS[s.onEnter.action] ? { action: s.onEnter.action } : null),
+      mailTemplate: normalizeMailTemplate(s.mailTemplate),
     }));
     if (!statuses.length) statuses.push({ id: uid(), name: DEFAULT_STATUSES[0] });
     const ids = new Set(statuses.map(s => s.id));
@@ -725,6 +740,31 @@ function closeAutomation(p) {
   if (!p || !p.onClose || !state) return null;
   const target = state.pipelines.find(x => x.id === p.onClose.targetPipelineId && x !== p);
   return target && target.statuses.length ? { target } : null;
+}
+// Fields a mail template can use. They are filled in when the popup opens, so the text you see is the text that goes out.
+// A field with no value for this lead stays visible as {…} instead of silently disappearing.
+const TEMPLATE_VARS = {
+  'שם': l => l.name,
+  'שם פרטי': l => String(l.name).trim().split(/\s+/)[0],
+  'חברה': l => l.company,
+  'טלפון': l => l.phone,
+  'תאריך פגישה': l => (l.meeting ? fmtIso(l.meeting.date) : ''),
+  'שעת פגישה': l => (l.meeting ? l.meeting.time : ''),
+  'מיקום הפגישה': l => (l.meeting ? l.meeting.location : ''),
+};
+function renderTemplate(text, lead) {
+  return String(text ?? '').replace(/\{([^{}]+)\}/g, (all, key) => {
+    const fill = TEMPLATE_VARS[key.trim()];
+    return (fill && fill(lead)) || all;
+  });
+}
+// Known fields still present in a text (so the user is asked before they go out unfilled).
+const unfilledVars = text => [...new Set(String(text).match(/\{[^{}]+\}/g) || [])].filter(v => TEMPLATE_VARS[v.slice(1, -1).trim()]);
+function insertAtCursor(el, text) {
+  const start = el.selectionStart ?? el.value.length, end = el.selectionEnd ?? start;
+  el.value = el.value.slice(0, start) + text + el.value.slice(end);
+  el.focus();
+  el.setSelectionRange(start + text.length, start + text.length);
 }
 let toastTimer = null;
 function showToast(text, actionLabel, onAction) {
@@ -1199,7 +1239,7 @@ function saveLead() {
     showToast(`הליד "${lead.name}" הועבר ל${move.label}`, `הצג את "${move.target.name}"`,
       () => { state.activePipelineId = move.target.id; commit(); });
   }
-  if (entering && MAIL_ACTIONS.has(entering.action) && saved) openComposer(saved.id, entering.action, entering.status.name);
+  if (entering && MAIL_ACTIONS.has(entering.action) && saved) openComposer(saved.id, entering.action, entering.status);
 }
 // Puts a lead into a status at a position (before another lead, or last) without saving or redrawing.
 function placeLead(p, lead, statusId, beforeId) {
@@ -1227,7 +1267,7 @@ function requestMove(id, statusId, beforeId) {
   if (action === 'meeting') { openLead(id, { transition: { kind: 'status', statusId, beforeId } }); return; }
   if (action === 'followup') { openFollowUp(lead, status, beforeId); return; }
   moveLead(id, statusId, beforeId);
-  if (MAIL_ACTIONS.has(action)) openComposer(id, action, status.name);
+  if (MAIL_ACTIONS.has(action)) openComposer(id, action, status);
 }
 
 /* ---- "follow-up required" popup ---- */
@@ -1269,6 +1309,19 @@ function dropOutcome(id, outcome) {
 }
 
 /* ---- automation settings ---- */
+// The default email text of a status whose rule is "email" or "summary". Shown only while such a rule is selected.
+function buildTemplateEditor(status, shown) {
+  const tpl = status.mailTemplate || { subject: '', body: '' };
+  const subject = h('input', { class: 'tpl-subject', maxlength: 300, dir: 'auto', placeholder: 'נושא', 'aria-label': `נושא ברירת מחדל: ${status.name}`, value: tpl.subject });
+  const body = h('textarea', { class: 'tpl-body', rows: 6, dir: 'auto', placeholder: 'תוכן', 'aria-label': `תוכן ברירת מחדל: ${status.name}`, value: tpl.body });
+  let last = body; // the field the field-buttons below insert into
+  subject.addEventListener('focus', () => { last = subject; });
+  body.addEventListener('focus', () => { last = body; });
+  const vars = Object.keys(TEMPLATE_VARS).map(k => h('button', { type: 'button', class: 'link tpl-var', onclick: () => insertAtCursor(last, `{${k}}`) }, `{${k}}`));
+  return h('div', { class: 'auto-tpl', hidden: !shown, 'data-status': status.id },
+    h('div', { class: 'hint' }, 'נוסח ברירת מחדל למייל. נטען לחלון המייל ואפשר לערוך אותו בכל שליחה. לחיצה על שדה מוסיפה אותו בנקודה שבה עמדת, והוא יתמלא מפרטי הליד:'),
+    subject, body, h('div', { class: 'tpl-vars' }, ...vars));
+}
 function openAutomation() {
   const p = activePipeline();
   if (!p) return;
@@ -1277,11 +1330,12 @@ function openAutomation() {
   $('#autoTitle').textContent = `אוטומציות: ${p.name}`;
   $('#autoStatuses').replaceChildren(...p.statuses.map(s => {
     const now = s.onEnter ? s.onEnter.action : '';
-    return h('div', { class: 'auto-row' },
-      h('span', {}, s.name),
-      h('select', { 'data-status': s.id, 'data-initial': now, 'aria-label': `פעולה בכניסה ל${s.name}` },
-        h('option', { value: '', selected: !now }, 'ללא'),
-        ...Object.entries(RULE_ACTIONS).map(([value, label]) => h('option', { value, selected: value === now }, label))));
+    const select = h('select', { 'data-status': s.id, 'data-initial': now, 'aria-label': `פעולה בכניסה ל${s.name}` },
+      h('option', { value: '', selected: !now }, 'ללא'),
+      ...Object.entries(RULE_ACTIONS).map(([value, label]) => h('option', { value, selected: value === now }, label)));
+    const editor = buildTemplateEditor(s, MAIL_ACTIONS.has(now));
+    select.addEventListener('change', () => { editor.hidden = !MAIL_ACTIONS.has(select.value); });
+    return h('div', { class: 'auto-item' }, h('div', { class: 'auto-row' }, h('span', {}, s.name), select), editor);
   }));
   $('#autoTarget').replaceChildren(...others.map(x => h('option', { value: x.id, selected: !!current && current.target === x }, x.name)));
   $('#autoOn').checked = !!current;
@@ -1299,6 +1353,15 @@ function saveAutomation() {
     if (sel.value === sel.dataset.initial) continue;
     const s = p.statuses.find(x => x.id === sel.dataset.status);
     if (s) s.onEnter = sel.value ? { action: sel.value } : null;
+  }
+  // A default text is saved for every status whose editor is showing (a hidden one is left as it was, so it is not lost).
+  for (const editor of document.querySelectorAll('#autoStatuses .auto-tpl')) {
+    if (editor.hidden) continue;
+    const s = p.statuses.find(x => x.id === editor.dataset.status);
+    if (!s) continue;
+    const subject = editor.querySelector('.tpl-subject').value.trim();
+    const body = editor.querySelector('.tpl-body').value.replace(/\s+$/, '');
+    if (subject || body.trim()) s.mailTemplate = { subject, body }; else delete s.mailTemplate;
   }
   $('#autoDialog').close();
   commit();
@@ -1632,17 +1695,21 @@ function setMailBusy(busy) {
   $('#mailSkip').disabled = busy;
   if (busy) $('#mailSend').textContent = 'שולח…';
 }
-function openComposer(leadId, kind, statusName) {
+function openComposer(leadId, kind, status) {
   const p = activePipeline();
   const lead = p && p.leads.find(l => l.id === leadId);
   if (!lead || $('#mailDialog').open) return;
-  mailCtx = { leadId, busy: false };
+  mailCtx = { leadId, busy: false, confirming: false };
   const ready = !!googleClientId();
+  const tpl = status.mailTemplate;
   $('#mailTitle').textContent = `${MAIL_TITLE[kind] || 'מייל'}: ${lead.name}`;
-  $('#mailInfo').textContent = `הליד כבר עבר ל"${statusName}". שליחת מייל היא לא חובה: "אל תשלח" משאיר אותו שם בלי לשלוח כלום.`;
+  $('#mailInfo').textContent = `הליד כבר עבר ל"${status.name}". שליחת מייל היא לא חובה: "אל תשלח" משאיר אותו שם בלי לשלוח כלום.`;
   $('#mTo').value = lead.email;
-  $('#mSubject').value = '';
-  $('#mBody').value = '';
+  $('#mSubject').value = tpl ? renderTemplate(tpl.subject, lead) : '';
+  $('#mBody').value = tpl ? renderTemplate(tpl.body, lead) : '';
+  $('#mailTpl').textContent = tpl
+    ? 'הנושא והתוכן נטענו מנוסח ברירת המחדל. אפשר לערוך אותם לפני השליחה, והעריכה חלה על המייל הזה בלבד. לשינוי קבוע: כפתור "אוטומציה".'
+    : 'אפשר להגדיר נוסח ברירת מחדל בכפתור "אוטומציה", כדי לא לכתוב מאפס בכל פעם.';
   $('#mailFrom').textContent = ready
     ? `יישלח מהחשבון שלך${gg.email ? ` (${gg.email})` : ''}, ויישמר גם כהערה בליד.`
     : 'גוגל עדיין לא מחובר. לחץ על הכפתור "גוגל" בשורה העליונה כדי לשלוח מיילים.';
@@ -1652,17 +1719,25 @@ function openComposer(leadId, kind, statusName) {
   $('#mailSkip').disabled = false;
   $('#mailSkip').textContent = 'אל תשלח';
   $('#mailDialog').showModal();
-  (lead.email ? $('#mSubject') : $('#mTo')).focus();
+  (!lead.email ? $('#mTo') : tpl ? $('#mBody') : $('#mSubject')).focus();
 }
 async function sendMail() {
   const ctx = mailCtx;
-  if (!ctx || ctx.busy) return;
+  if (!ctx || ctx.busy || ctx.confirming) return;
   const p = activePipeline();
   const lead = p && p.leads.find(l => l.id === ctx.leadId);
   const to = $('#mTo').value.trim(), subject = $('#mSubject').value.trim(), body = $('#mBody').value.trim();
   // Whitespace-only passes the native "required" check, so blank the field and let the browser flag it.
   for (const [value, id] of [[subject, '#mSubject'], [body, '#mBody']]) {
     if (!value) { $(id).value = ''; $(id).reportValidity(); return; }
+  }
+  // A template field this lead has no value for (say {חברה}) is still in the text: ask before it goes out as it is.
+  const unfilled = unfilledVars(`${subject}\n${body}`);
+  if (unfilled.length) {
+    ctx.confirming = true;
+    const go = await askConfirm('יש שדות שלא מולאו', `בטקסט נשארו: ${unfilled.join(' ')}. לשלוח בכל זאת?`, 'שלח בכל זאת');
+    ctx.confirming = false;
+    if (!go) return;
   }
   setMailBusy(true);
   setMailError('');
