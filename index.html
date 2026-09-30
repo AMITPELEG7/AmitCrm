@@ -222,10 +222,13 @@
   #impMap { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; margin-top: 8px; }
   @media (max-width: 560px) { #impMap { grid-template-columns: 1fr; } }
   /* Keep "import" in view however long the preview and the skipped list get. */
-  .imp-actions {
+  .imp-actions, .mail-actions {
     position: sticky; bottom: -20px; margin: 16px -20px -20px; padding: 12px 20px;
     background: var(--panel); border-top: 1px solid var(--line);
   }
+  #mailDialog { width: min(640px, 94vw); max-height: 92vh; overflow: auto; }
+  #mailInfo { margin: -4px 0 12px; }
+  .fields.one { grid-template-columns: 1fr; }
   #impSkipped { margin-top: 8px; font-size: 13px; }
   #impSkipped ul { margin: 6px 0 0; padding-inline-start: 20px; max-height: 160px; overflow: auto; }
   #autoDialog { width: min(560px, 94vw); max-height: 92vh; overflow: auto; }
@@ -453,6 +456,33 @@
   </div>
 </dialog>
 
+<dialog id="mailDialog">
+  <form id="mailForm" autocomplete="off">
+    <h3 id="mailTitle"></h3>
+    <p id="mailInfo" class="hint"></p>
+    <div class="fields one">
+      <div class="field">
+        <div class="field-head"><label for="mTo">אל <span class="req">*</span></label></div>
+        <input id="mTo" type="email" required maxlength="200" dir="auto">
+      </div>
+      <div class="field">
+        <div class="field-head"><label for="mSubject">נושא <span class="req">*</span></label></div>
+        <input id="mSubject" required maxlength="300" dir="auto">
+      </div>
+      <div class="field">
+        <div class="field-head"><label for="mBody">תוכן <span class="req">*</span></label></div>
+        <textarea id="mBody" rows="10" required dir="auto"></textarea>
+      </div>
+    </div>
+    <p id="mailFrom" class="hint"></p>
+    <p id="mailError" class="imp-error" role="alert" hidden></p>
+    <div class="actions mail-actions">
+      <button id="mailSend" class="primary">שלח</button>
+      <button id="mailSkip" type="button">אל תשלח</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="followDialog">
   <form id="followForm" autocomplete="off">
     <h3 id="followTitle"></h3>
@@ -549,8 +579,9 @@ const iconBtn = (glyph, label, onclick, disabled = false) =>
 //          meeting: null | { date: 'YYYY-MM-DD', time: 'HH:MM', endTime: 'HH:MM' | '' (empty = 30 min), location, guests: [email] }
 // Pipeline.onClose: undefined (never set up) | null (switched off) | { action: 'meeting', targetPipelineId }
 //   -> dropping a lead on "נסגר" opens the meeting dialog and, on confirm, moves the lead to the target pipeline's first status.
-// Status.onEnter: undefined (never set up) | null (switched off) | { action: 'meeting' | 'followup' }
-//   -> dragging a lead into that status opens the action's popup first; the lead only moves once it is confirmed.
+// Status.onEnter: undefined (never set up) | null (switched off) | { action: 'meeting' | 'followup' | 'email' | 'summary' }
+//   -> dragging a lead into that status opens the action's popup first; the lead only moves once it is confirmed
+//      (meeting, followup). For 'email' and 'summary' the lead moves first and the popup only offers to send an email.
 // "Last contact" is not stored: it is the timestamp of the newest note.
 // A lead with an outcome is off the board but keeps its last statusId, so "return to board" restores it.
 const DEFAULT_STATUSES = ['חדש', 'בקשר', 'פגישה', 'הצעת מחיר'];
@@ -560,9 +591,18 @@ const DEFAULT_MEETING_MIN = 30;
 // Status rules set up automatically, by pipeline and status name, wherever the status was never configured.
 const STATUS_RULES = [
   { pipeline: 'תיאום פגישות', status: 'חזרה ללקוח', action: 'followup' },
+  { pipeline: 'תיאום פגישות', status: 'אין מענה ראשון', action: 'email' },
   { pipeline: 'מכירות', status: 'תואמה פגישה', action: 'meeting' },
+  { pipeline: 'מכירות', status: 'לאחר פגישה', action: 'summary' },
 ];
-const RULE_ACTIONS = { meeting: 'פתח פרטי פגישה', followup: 'דרוש מועד מעקב הבא (תאריך ושעה)' };
+const RULE_ACTIONS = {
+  meeting: 'פתח פרטי פגישה',
+  followup: 'דרוש מועד מעקב הבא (תאריך ושעה)',
+  email: 'פתח חלון מייל (הסטטוס משתנה בכל מקרה)',
+  summary: 'פתח חלון סיכום פגישה (הסטטוס משתנה בכל מקרה)',
+};
+// These two never hold a lead back: the lead moves first, and the popup only decides whether an email goes out.
+const MAIL_ACTIONS = new Set(['email', 'summary']);
 
 function newPipeline(name) {
   return { id: uid(), name, statuses: DEFAULT_STATUSES.map(n => ({ id: uid(), name: n })), leads: [] };
@@ -1049,9 +1089,9 @@ function syncStatusRule() {
   for (const sel of ['#fFollow', '#fFollowTime']) $(sel).required = needFollow;
   const hint = $('#statusHint');
   hint.hidden = !rule;
-  if (rule) hint.textContent = needMeeting
-    ? `ב"${rule.status.name}" חובה למלא פרטי פגישה (יום ושעה).`
-    : `ב"${rule.status.name}" חובה לקבוע מועד מעקב הבא (תאריך ושעה).`;
+  if (rule) hint.textContent = needMeeting ? `ב"${rule.status.name}" חובה למלא פרטי פגישה (יום ושעה).`
+    : needFollow ? `ב"${rule.status.name}" חובה לקבוע מועד מעקב הבא (תאריך ושעה).`
+    : `אחרי השמירה ייפתח חלון מייל ("${rule.status.name}"). אפשר לבחור לא לשלוח.`;
 }
 function updateEndHint() {
   const time = $('#fMTime').value;
@@ -1129,6 +1169,8 @@ function saveLead() {
     if (!meeting) return;
   }
   const chosen = $('#statusField').hidden ? '' : $('#fStatus').value; // '' = leave as is (also: still outside the board)
+  const entering = pendingStatusRule(); // read before the lead moves: the rule of a status it is about to enter
+  let saved = lead;
   if (lead) {
     Object.assign(lead, v);
     if (meeting) lead.meeting = meeting;
@@ -1138,6 +1180,7 @@ function saveLead() {
     const first = $('#fFirstNote').value.trim();
     if (first) created.notes.push({ id: uid(), text: first, at: Date.now() });
     p.leads.push(created);
+    saved = created;
   }
   // A pending move happens only now, on confirm. Handing a lead over to another pipeline places it directly,
   // without running that status's own rule (its meeting details were just collected).
@@ -1156,6 +1199,7 @@ function saveLead() {
     showToast(`הליד "${lead.name}" הועבר ל${move.label}`, `הצג את "${move.target.name}"`,
       () => { state.activePipelineId = move.target.id; commit(); });
   }
+  if (entering && MAIL_ACTIONS.has(entering.action) && saved) openComposer(saved.id, entering.action, entering.status.name);
 }
 // Puts a lead into a status at a position (before another lead, or last) without saving or redrawing.
 function placeLead(p, lead, statusId, beforeId) {
@@ -1183,6 +1227,7 @@ function requestMove(id, statusId, beforeId) {
   if (action === 'meeting') { openLead(id, { transition: { kind: 'status', statusId, beforeId } }); return; }
   if (action === 'followup') { openFollowUp(lead, status, beforeId); return; }
   moveLead(id, statusId, beforeId);
+  if (MAIL_ACTIONS.has(action)) openComposer(id, action, status.name);
 }
 
 /* ---- "follow-up required" popup ---- */
@@ -1416,14 +1461,27 @@ function encodeHeaderText(text) {
   if (chunk) words.push(chunk);
   return words.map(w => `=?UTF-8?B?${toBase64(utf8(w))}?=`).join('\r\n ');
 }
-// A plain-text UTF-8 message. Recipients are validated so lead data can never inject extra headers.
+const HEBREW_RE = /[֐-׿]/;
+const escapeHtml = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const base64Lines = s => toBase64(utf8(s)).replace(/.{1,76}/g, '$&\r\n');
+// A UTF-8 message. Recipients are validated so lead data can never inject extra headers.
+// Text with Hebrew goes out both as plain text and as HTML with right-to-left direction, so the recipient's
+// mail app lines it up on the right; anything else is plain text only.
 function buildMime({ to, subject, text }) {
   const list = [].concat(to).map(a => String(a ?? '').trim()).filter(Boolean);
   if (!list.length) throw new GoogleError('address', 'חסר נמען.');
   for (const a of list) if (!EMAIL_RE.test(a) || /[\r\n,<>"]/.test(a)) throw new GoogleError('address', `כתובת המייל "${a}" אינה תקינה.`);
-  const body = toBase64(utf8(String(text ?? '').replace(/\r?\n/g, '\r\n'))).replace(/.{1,76}/g, '$&\r\n');
-  return ['To: ' + list.join(', '), 'Subject: ' + encodeHeaderText(subject ?? ''), 'MIME-Version: 1.0',
-    'Content-Type: text/plain; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', body].join('\r\n');
+  const plain = String(text ?? '').replace(/\r?\n/g, '\r\n');
+  const head = ['To: ' + list.join(', '), 'Subject: ' + encodeHeaderText(subject ?? ''), 'MIME-Version: 1.0'];
+  if (!HEBREW_RE.test(plain)) {
+    return [...head, 'Content-Type: text/plain; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', base64Lines(plain)].join('\r\n');
+  }
+  const boundary = `=_crm_${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  const html = `<div dir="rtl" style="direction:rtl;text-align:right;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5">${escapeHtml(plain).replace(/\r\n/g, '<br>\r\n')}</div>`;
+  return [...head, `Content-Type: multipart/alternative; boundary="${boundary}"`, '',
+    `--${boundary}`, 'Content-Type: text/plain; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', base64Lines(plain),
+    `--${boundary}`, 'Content-Type: text/html; charset="UTF-8"', 'Content-Transfer-Encoding: base64', '', base64Lines(html),
+    `--${boundary}--`, ''].join('\r\n');
 }
 async function gmailSend({ to, subject, text }) {
   const raw = toBase64Url(utf8(buildMime({ to, subject, text })));
@@ -1555,6 +1613,76 @@ async function googleDeleteTestEvent() {
   } catch (e) {
     setGoogleResult('err', `לא הצלחתי למחוק: ${e.message}`);
   } finally { gg.busy = false; updateGoogleUi(); }
+}
+
+/* ================= email popup ================= */
+// Opened right after a lead has moved into a status whose rule is "email" or "summary". Sending is optional:
+// "אל תשלח" leaves the lead in its new status and sends nothing. A sent email is saved on the lead as a note,
+// which also refreshes its "last contact".
+let mailCtx = null; // { leadId, busy }
+const MAIL_TITLE = { email: 'מייל ללקוח', summary: 'סיכום פגישה' };
+function setMailError(msg) {
+  const el = $('#mailError');
+  el.textContent = msg;
+  el.hidden = !msg;
+}
+function setMailBusy(busy) {
+  if (mailCtx) mailCtx.busy = busy;
+  $('#mailSend').disabled = busy;
+  $('#mailSkip').disabled = busy;
+  if (busy) $('#mailSend').textContent = 'שולח…';
+}
+function openComposer(leadId, kind, statusName) {
+  const p = activePipeline();
+  const lead = p && p.leads.find(l => l.id === leadId);
+  if (!lead || $('#mailDialog').open) return;
+  mailCtx = { leadId, busy: false };
+  const ready = !!googleClientId();
+  $('#mailTitle').textContent = `${MAIL_TITLE[kind] || 'מייל'}: ${lead.name}`;
+  $('#mailInfo').textContent = `הליד כבר עבר ל"${statusName}". שליחת מייל היא לא חובה: "אל תשלח" משאיר אותו שם בלי לשלוח כלום.`;
+  $('#mTo').value = lead.email;
+  $('#mSubject').value = '';
+  $('#mBody').value = '';
+  $('#mailFrom').textContent = ready
+    ? `יישלח מהחשבון שלך${gg.email ? ` (${gg.email})` : ''}, ויישמר גם כהערה בליד.`
+    : 'גוגל עדיין לא מחובר. לחץ על הכפתור "גוגל" בשורה העליונה כדי לשלוח מיילים.';
+  setMailError('');
+  $('#mailSend').disabled = !ready;
+  $('#mailSend').textContent = 'שלח';
+  $('#mailSkip').disabled = false;
+  $('#mailSkip').textContent = 'אל תשלח';
+  $('#mailDialog').showModal();
+  (lead.email ? $('#mSubject') : $('#mTo')).focus();
+}
+async function sendMail() {
+  const ctx = mailCtx;
+  if (!ctx || ctx.busy) return;
+  const p = activePipeline();
+  const lead = p && p.leads.find(l => l.id === ctx.leadId);
+  const to = $('#mTo').value.trim(), subject = $('#mSubject').value.trim(), body = $('#mBody').value.trim();
+  // Whitespace-only passes the native "required" check, so blank the field and let the browser flag it.
+  for (const [value, id] of [[subject, '#mSubject'], [body, '#mBody']]) {
+    if (!value) { $(id).value = ''; $(id).reportValidity(); return; }
+  }
+  setMailBusy(true);
+  setMailError('');
+  try {
+    await gmailSend({ to, subject, text: body });
+  } catch (e) {
+    setMailBusy(false);
+    setMailError(e.message);
+    $('#mailSend').textContent = 'נסה שוב';
+    $('#mailSkip').textContent = 'המשך בלי לשלוח';
+    return;
+  }
+  if (lead) {
+    if (!lead.email) lead.email = to; // a lead without an address keeps the one typed here
+    lead.notes.push({ id: uid(), text: `נשלח מייל אל ${to}\nנושא: ${subject}\n\n${body}`, at: Date.now() });
+  }
+  mailCtx = null;
+  $('#mailDialog').close();
+  commit();
+  showToast(`המייל נשלח אל ${to}`);
 }
 
 /* ================= CSV import ================= */
@@ -1959,6 +2087,10 @@ $('#gTestMail').addEventListener('click', googleTestMail);
 $('#gTestCal').addEventListener('click', googleTestCalendar);
 $('#gDelTest').addEventListener('click', googleDeleteTestEvent);
 $('#gClose').addEventListener('click', () => $('#googleDialog').close());
+$('#mailForm').addEventListener('submit', e => { e.preventDefault(); sendMail(); });
+$('#mailSkip').addEventListener('click', () => { if (!(mailCtx && mailCtx.busy)) $('#mailDialog').close(); });
+$('#mailDialog').addEventListener('cancel', e => { if (mailCtx && mailCtx.busy) e.preventDefault(); }); // Esc must not hide a send in progress
+$('#mailDialog').addEventListener('close', () => { if (!(mailCtx && mailCtx.busy)) mailCtx = null; });
 $('#gCopyOrigin').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(location.origin); setGoogleResult('ok', `הועתק: ${location.origin}`); }
   catch { setGoogleResult('err', 'לא הצלחתי להעתיק. סמן את הכתובת והעתק ידנית.'); }
