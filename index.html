@@ -362,8 +362,8 @@
         <input id="fName" required maxlength="120">
       </div>
       <div class="field">
-        <div class="field-head"><label for="fPhone">טלפון <span class="req">*</span></label></div>
-        <input id="fPhone" type="tel" required maxlength="40" dir="auto">
+        <div class="field-head"><label for="fPhone">טלפון</label></div>
+        <input id="fPhone" type="tel" maxlength="40" dir="auto">
       </div>
       <div class="field">
         <div class="field-head"><label for="fEmail">אימייל</label></div>
@@ -478,7 +478,7 @@
 <dialog id="importDialog">
   <h3>ייבוא לידים מקובץ CSV</h3>
   <div id="impStep1">
-    <p class="hint">הקובץ נקרא בדפדפן בלבד ולא נשלח לשום מקום. השורה הראשונה היא כותרות. חובה: שם וטלפון (אפשר לוותר על הטלפון עם "ייבא גם לידים בלי טלפון").</p>
+    <p class="hint">הקובץ נקרא בדפדפן בלבד ולא נשלח לשום מקום. השורה הראשונה היא כותרות. חובה: שם. טלפון ואימייל לא חובה.</p>
     <input id="importFile" type="file" accept=".csv,.txt,.tsv,text/csv">
     <div><button id="importTemplate" type="button" class="link">הורד קובץ לדוגמה</button></div>
   </div>
@@ -490,7 +490,6 @@
     </div>
     <label class="check"><input type="checkbox" id="impSkipDup" checked><span>דלג על מספרי טלפון שכבר קיימים בלידים או כפולים בקובץ (ליד בלי טלפון: לפי שם וחברה)</span></label>
     <label class="check" id="impGroupWrap" hidden><input type="checkbox" id="impGroup" checked><span>קבץ שורות של אותה חברה לליד אחד: איש הקשר הראשון הוא הליד, והאחרים נכנסים להערה</span></label>
-    <label class="check"><input type="checkbox" id="impNoPhone"><span>ייבא גם לידים בלי טלפון</span></label>
     <div id="impSummary" class="imp-summary"></div>
     <div class="imp-preview"><table id="impPreview"></table></div>
     <details id="impMapBox"><summary>התאמת עמודות (לחץ כדי לבדוק או לשנות)</summary><div id="impMap"></div></details>
@@ -647,7 +646,6 @@ const iconBtn = (glyph, label, onclick, disabled = false) =>
 //          nextFollowUp: 'YYYY-MM-DD' | '', nextFollowUpTime: 'HH:MM' | '', notes: [{ id, text, at }],
 //          statusId, outcome: null | 'failed' | 'closed', createdAt }      (* = required)
 //          meeting: null | { date: 'YYYY-MM-DD', time: 'HH:MM', endTime: 'HH:MM' | '' (empty = 30 min), location, guests: [email] }
-//          phoneOptional: true (only on a lead imported without a phone, see the CSV import): its phone may stay empty.
 //          calendar: { meeting?: CalEvent, follow?: CalEvent }   CalEvent = { id, link, key }: the Google Calendar event made for the
 //            meeting / for the follow-up, and the key (JSON of what was sent) that tells whether it is still up to date.
 // Pipeline.onClose: undefined (never set up) | null (switched off) | { action: 'meeting', targetPipelineId }
@@ -1153,8 +1151,6 @@ function openLead(id, opts = {}) {
   $('#leadTitle').textContent = meetingMode ? `תיאום פגישה: ${lead.name}` : lead ? (lead.name || 'ליד ללא שם') : 'ליד חדש';
   $('#fName').value = lead?.name ?? '';
   $('#fPhone').value = lead?.phone ?? '';
-  // Phone is required, except for a lead that was imported without one on purpose: it can be saved as it is until a phone is added.
-  $('#fPhone').required = !lead || !!lead.phone || !lead.phoneOptional;
   $('#fEmail').value = lead?.email ?? '';
   $('#fCompany').value = lead?.company ?? '';
   $('#fCategory').value = lead?.category ?? '';
@@ -1331,9 +1327,7 @@ async function saveLead(opts = {}) {
     nextFollowUpTime: $('#fFollow').value ? $('#fFollowTime').value : '', // a time without a date means nothing
   };
   // Whitespace-only passes the native "required" check, so blank the field and let the browser flag it.
-  for (const [key, id] of [['name', '#fName'], ['phone', '#fPhone']]) {
-    if (!v[key] && $(id).required) { $(id).value = ''; $(id).reportValidity(); return; }
-  }
+  if (!v.name) { $('#fName').value = ''; $('#fName').reportValidity(); return; }
   const lead = currentLead();
   let meeting = null;
   if (!$('#meetingSection').hidden) {
@@ -2436,7 +2430,7 @@ async function sendMail() {
 // The file is read, parsed and previewed in the browser, and only then added as leads.
 const CSV_FIELDS = [
   { key: 'name', label: 'שם מלא', required: true, aliases: ['contact full name', 'שם', 'שם מלא', 'שם ושם משפחה', 'שם הליד', 'שם איש קשר', 'name', 'full name', 'fullname', 'contact', 'contact name'] },
-  { key: 'phone', label: 'טלפון', required: true, aliases: ['company phone', 'contact phone', 'direct phone', 'office phone', 'work phone', 'טלפון חברה', 'טלפון משרד', 'טלפון ישיר', 'טלפון', 'נייד', 'טלפון נייד', 'פלאפון', 'סלולרי', 'מספר טלפון', 'phone', 'mobile', 'cell', 'tel', 'telephone', 'phone number'] },
+  { key: 'phone', label: 'טלפון', aliases: ['company phone', 'contact phone', 'direct phone', 'office phone', 'work phone', 'טלפון חברה', 'טלפון משרד', 'טלפון ישיר', 'טלפון', 'נייד', 'טלפון נייד', 'פלאפון', 'סלולרי', 'מספר טלפון', 'phone', 'mobile', 'cell', 'tel', 'telephone', 'phone number'] },
   { key: 'email', label: 'אימייל', aliases: ['contact email', 'work email', 'business email', 'אימייל איש קשר', 'מייל איש קשר', 'אימייל', 'מייל', 'דוא"ל', 'דואל', 'כתובת מייל', 'email', 'e-mail', 'mail'] },
   { key: 'company', label: 'חברה', aliases: ['company name', 'שם החברה', 'account name', 'חברה', 'שם חברה', 'עסק', 'company', 'organization', 'business'] },
   { key: 'category', label: 'קטגוריה / התמחות', aliases: ['קטגוריה', 'התמחות', 'תחום', 'category', 'specialty', 'specialization', 'industry'] },
@@ -2530,7 +2524,8 @@ function autoMap(headers) {
 // Turns CSV rows into leads. Rows without a name or phone (and, optionally, repeated phones) are skipped and listed.
 //  - group: rows of the same company become one lead. The first row with a name is the contact; the other contacts are
 //    written into the lead's note, together with the columns chosen as `extras` ({ idx, label }).
-//  - allowNoPhone: a lead without a phone is imported too (a company with no name in the file is named after the company).
+//  - a company with no contact name in the file is named after the company. Phone and email are both optional; a lead
+//    without a phone is recognised as a duplicate by name + company.
 const normCompany = c => String(c ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
 const nameKey = (name, company) => `nm:${normCompany(name)}|${normCompany(company)}`;
 const isSameAsAbove = v => /^same as (the )?(row )?above\b/i.test(v);
@@ -2564,11 +2559,11 @@ function composeImportNote(group, main, leadPhone, noContact) {
   }
   return out.join('\n\n');
 }
-function buildImport({ rows, mapping, statuses, defaultStatusId, existing, skipDup, group = false, allowNoPhone = false, extras = [] }) {
+function buildImport({ rows, mapping, statuses, defaultStatusId, existing, skipDup, group = false, extras = [] }) {
   const cell = (r, key) => (mapping[key] === undefined ? '' : String(r[mapping[key]] ?? '').trim());
   const seen = new Set(skipDup ? existing : []);
   const good = [], skipped = [];
-  const stats = { missing: 0, missingPhone: 0, dup: 0, badEmail: 0, badDate: 0, unknownStatus: 0, contactsInNotes: 0, groups: 0 };
+  const stats = { missing: 0, dup: 0, badEmail: 0, badDate: 0, unknownStatus: 0, contactsInNotes: 0, groups: 0 };
   const recs = rows.map((r, i) => {
     const note = cell(r, 'notes');
     const extraLines = extras.map(e => [e.label, String(r[e.idx] ?? '').trim()]).filter(l => l[1]);
@@ -2591,10 +2586,9 @@ function buildImport({ rows, mapping, statuses, defaultStatusId, existing, skipD
     const noContact = !main.name && !!company; // a company with no contact in the file is named after the company
     const name = main.name || company;
     const phone = [main, ...g].map(x => x.phone).find(Boolean) || '';
-    if (!name || (!phone && !allowNoPhone)) {
+    if (!name) {
       stats.missing++;
-      if (name && !phone) stats.missingPhone++;
-      skipped.push({ line: main.line, label: name || phone, reason: !name && !phone ? 'חסרים שם וטלפון' : !name ? 'חסר שם' : 'חסר טלפון' });
+      skipped.push({ line: main.line, label: phone || main.email, reason: 'חסר שם' });
       continue;
     }
     const key = phone ? phoneKey(phone) : nameKey(name, company);
@@ -2611,7 +2605,6 @@ function buildImport({ rows, mapping, statuses, defaultStatusId, existing, skipD
     good.push({
       id: uid(), name, phone, email, company, category: g.map(x => x.category).find(Boolean) || '', website: g.map(x => x.website).find(Boolean) || '',
       nextFollowUp, nextFollowUpTime: '', meeting: null, calendar: {},
-      ...(phone ? {} : { phoneOptional: true }), // imported on purpose without a phone: it may be saved as it is
       notes: noteText ? [{ id: uid(), text: noteText, at: Date.now(), imported: true }] : [],
       statusId, outcome: null, createdAt: Date.now(),
     });
@@ -2652,7 +2645,6 @@ async function onImportFile(file) {
   imp = { headers, rows: rows.slice(1), result: null,
     extraOff: new Set(headers.map((hd, i) => (EXTRA_OFF_BY_DEFAULT.has(normHeader(hd)) ? i : -1)).filter(i => i >= 0)) }; // extra columns the user has switched off
   $('#impGroup').checked = true;
-  $('#impNoPhone').checked = false;
   const mapping = autoMap(headers);
   $('#impMap').replaceChildren(...CSV_FIELDS.map(f => h('div', { class: 'auto-row' },
     h('span', {}, f.label + (f.required ? ' *' : '')),
@@ -2674,11 +2666,10 @@ function recomputeImport() {
   const mapping = {};
   document.querySelectorAll('#impMap select').forEach(s => { if (s.value !== '') mapping[s.dataset.key] = Number(s.value); });
   const summary = $('#impSummary'), go = $('#impGo'), skippedBox = $('#impSkipped');
-  const noPhone = $('#impNoPhone').checked;
-  if (mapping.name === undefined || (mapping.phone === undefined && !noPhone)) {
+  if (mapping.name === undefined) {
     imp.result = null;
     summary.className = 'imp-summary warn';
-    summary.textContent = noPhone ? 'חובה לבחור עמודה לשם.' : 'חובה לבחור עמודה לשם ועמודה לטלפון.';
+    summary.textContent = 'חובה לבחור עמודה לשם.';
     go.hidden = true; skippedBox.hidden = true;
     $('#impExtraBox').hidden = true; $('#impNoteBox').hidden = true; $('#impGroupWrap').hidden = true;
     $('#impPreview').replaceChildren();
@@ -2699,10 +2690,10 @@ function recomputeImport() {
   const extras = candidates.filter(c => !imp.extraOff.has(c.idx)).map(c => ({ idx: c.idx, label: EXTRA_LABELS[normHeader(c.hd)] || c.hd || `עמודה ${c.idx + 1}` }));
   // Known leads, by phone, and by name + company (which is how a lead with no phone in the file is recognised, even if it has a phone now).
   const existing = new Set(state.pipelines.flatMap(x => x.leads.flatMap(l => [l.phone ? phoneKey(l.phone) : '', nameKey(l.name, l.company)])).filter(Boolean));
-  const res = buildImport({ rows: imp.rows, mapping, statuses: p.statuses, defaultStatusId: $('#impStatus').value, existing, skipDup: $('#impSkipDup').checked, group, allowNoPhone: noPhone, extras });
+  const res = buildImport({ rows: imp.rows, mapping, statuses: p.statuses, defaultStatusId: $('#impStatus').value, existing, skipDup: $('#impSkipDup').checked, group, extras });
   imp.result = res;
   const st = res.stats;
-  const skippedWhy = [st.missing && `חסר שם או טלפון: ${st.missing}`, st.dup && `טלפון קיים או כפול: ${st.dup}`].filter(Boolean);
+  const skippedWhy = [st.missing && `חסר שם: ${st.missing}`, st.dup && `ליד קיים או כפול: ${st.dup}`].filter(Boolean);
   const cleaned = [st.badEmail && `אימייל לא תקין (נוקה): ${st.badEmail}`, st.badDate && `מועד מעקב לא מזוהה (נוקה): ${st.badDate}`,
     st.unknownStatus && `סטטוס לא מוכר (נכנס לסטטוס שנבחר): ${st.unknownStatus}`].filter(Boolean);
   summary.className = 'imp-summary' + (res.good.length ? '' : ' warn');
@@ -2710,7 +2701,6 @@ function recomputeImport() {
     h('div', {}, `${imp.rows.length} שורות בקובץ · ${res.good.length} ייובאו · ${res.skipped.length} ידולגו`),
     st.groups ? h('small', {}, `${st.groups} חברות עם כמה אנשי קשר: ${st.contactsInNotes} אנשי קשר נוספים נכנסו להערות`) : null,
     skippedWhy.length ? h('small', {}, `ידולגו: ${skippedWhy.join(' · ')}`) : null,
-    st.missingPhone && !noPhone ? h('small', {}, `${st.missingPhone} ידולגו רק כי אין להם טלפון. סמן "ייבא גם לידים בלי טלפון" כדי להכניס אותם.`) : null,
     cleaned.length ? h('small', {}, cleaned.join(' · ')) : null,
   ].filter(Boolean));
   const cols = CSV_FIELDS.filter(f => mapping[f.key] !== undefined);
@@ -3035,7 +3025,6 @@ $('#importTemplate').addEventListener('click', downloadTemplate);
 $('#impStatus').addEventListener('change', recomputeImport);
 $('#impSkipDup').addEventListener('change', recomputeImport);
 $('#impGroup').addEventListener('change', recomputeImport);
-$('#impNoPhone').addEventListener('change', recomputeImport);
 $('#impGo').addEventListener('click', doImport);
 $('#impClose').addEventListener('click', () => $('#importDialog').close());
 // A click on a card opens it; a drag never produces a click, and buttons/links inside keep their own behaviour.
