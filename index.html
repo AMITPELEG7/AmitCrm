@@ -236,10 +236,15 @@
   .cal-msg.err { background: var(--fail-soft); color: var(--fail); }
   #mCalRow .check { margin-bottom: 2px; font-weight: 600; }
   #mCalRow a, #followCalText a { color: var(--accent); font-weight: 600; }
-  .q-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin: 6px 0; }
-  .q-inputs label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 2px; }
-  .q-inputs input { width: 100%; }
-  @media (max-width: 560px) { .q-inputs { grid-template-columns: 1fr; } }
+  /* on/off switch */
+  .switch { position: relative; display: flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 600; margin-bottom: 6px; }
+  .switch input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
+  .switch .slider { position: relative; flex: none; width: 38px; height: 22px; border-radius: 999px; background: var(--line); transition: background .15s; }
+  .switch .slider::after { content: ''; position: absolute; top: 3px; inset-inline-start: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .3); transition: inset-inline-start .15s; }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider::after { inset-inline-start: 19px; }
+  .switch input:focus-visible + .slider { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #qFields input, #qFields textarea { width: 100%; margin: 0 0 6px; }
   .phone-link { color: inherit; text-decoration: none; }
   .phone-link:hover { color: var(--accent); text-decoration: underline; }
   .sig-box { margin: 0 0 10px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
@@ -510,10 +515,11 @@
       </div>
     </div>
     <div id="qBox" class="sig-box" hidden>
-      <div class="sig-title">הצעת מחיר (PDF)</div>
-      <div id="qFields">
+      <label class="switch"><input type="checkbox" id="qOn" role="switch"><span class="slider"></span><span>כלול הצעת מחיר (PDF)</span></label>
+      <div id="qFields" hidden>
         <p id="qHint" class="hint"></p>
-        <div id="qInputs" class="q-inputs"></div>
+        <input id="qTitle" maxlength="200" dir="auto" placeholder="כותרת ההצעה" aria-label="כותרת ההצעה">
+        <textarea id="qBody" rows="10" dir="auto" placeholder="תוכן ההצעה" aria-label="תוכן ההצעה"></textarea>
         <button id="qPreview" type="button">תצוגה מקדימה של ההצעה</button>
         <p id="qError" class="imp-error" role="alert" hidden></p>
       </div>
@@ -532,15 +538,6 @@
       <button id="mailSkip" type="button">אל תשלח</button>
     </div>
   </form>
-</dialog>
-
-<dialog id="quoteAskDialog">
-  <h3 id="qaTitle"></h3>
-  <p id="qaMsg"></p>
-  <div class="actions">
-    <button id="qaYes" class="primary">כן, שלח הצעת מחיר</button>
-    <button id="qaNo" type="button">לא, סיכום פגישה</button>
-  </div>
 </dialog>
 
 <dialog id="followDialog">
@@ -648,10 +645,8 @@ const iconBtn = (glyph, label, onclick, disabled = false) =>
 //      (meeting, followup). For 'email' and 'summary' the lead moves first and the popup only offers to send an email.
 // Status.mailTemplate: undefined | { subject, body } -> the default text of that status's email popup. It may hold
 //   fields like {שם פרטי} that are filled from the lead when the popup opens (see TEMPLATE_VARS).
-// Status.quoteTemplate: undefined | { title, body, mailSubject, mailBody } -> the price quote of a status whose rule is
-//   "summary": title + body make the PDF (besides the lead fields, any other {field} becomes a box to fill in), and
-//   mailSubject + mailBody are the default text of the email that carries it. After a lead enters that status the user is
-//   asked whether to send a quote: yes opens the quote email, no opens the usual meeting summary.
+// Status.quoteTemplate: undefined | { title, body } -> the price quote of a status whose rule is "summary". In that status's
+//   email popup a switch adds it to the email as a PDF, with this text filled in from the lead and editable for that email.
 // "Last contact" is not stored: it is the timestamp of the newest note.
 // A lead with an outcome is off the board but keeps its last statusId, so "return to board" restores it.
 const DEFAULT_STATUSES = ['חדש', 'בקשר', 'פגישה', 'הצעת מחיר'];
@@ -685,11 +680,11 @@ function defaultState() {
 }
 function normalizeQuoteTemplate(t) {
   if (!t || typeof t !== 'object') return undefined;
-  const q = { title: String(t.title ?? ''), body: String(t.body ?? ''), mailSubject: String(t.mailSubject ?? ''), mailBody: String(t.mailBody ?? '') };
-  return Object.values(q).some(v => v.trim()) ? q : undefined;
+  const q = { title: String(t.title ?? ''), body: String(t.body ?? '') };
+  return q.title.trim() || q.body.trim() ? q : undefined;
 }
-// A quote needs something to put in the PDF; a template with only email text does not count.
-const hasQuote = status => !!(status && status.quoteTemplate && (status.quoteTemplate.title.trim() || status.quoteTemplate.body.trim()));
+// A quote needs something to put in the PDF.
+const hasQuote = status => !!(status && status.quoteTemplate);
 function normalizeMailTemplate(t) {
   if (!t || typeof t !== 'object') return undefined;
   const subject = String(t.subject ?? ''), body = String(t.body ?? '');
@@ -856,8 +851,8 @@ function insertAtCursor(el, text) {
 let toastTimer = null;
 function showToast(text, actionLabel, onAction) {
   const el = $('#toast');
-  el.replaceChildren(h('span', {}, text),
-    actionLabel ? h('button', { type: 'button', onclick: () => { el.hidden = true; onAction(); } }, actionLabel) : null);
+  el.replaceChildren(...[h('span', {}, text),
+    actionLabel ? h('button', { type: 'button', onclick: () => { el.hidden = true; onAction(); } }, actionLabel) : null].filter(Boolean)); // (a null child would be written as the word "null")
   el.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.hidden = true; }, 8000);
@@ -1397,7 +1392,7 @@ async function saveLead(opts = {}) {
     showToast(`הליד "${lead.name}" הועבר ל${move.label}`, `הצג את "${move.target.name}"`,
       () => { state.activePipelineId = move.target.id; commit(); });
   }
-  if (entering && MAIL_ACTIONS.has(entering.action) && saved) startMailFlow(saved.id, entering.action, entering.status);
+  if (entering && MAIL_ACTIONS.has(entering.action) && saved) openComposer(saved.id, entering.action, entering.status);
 }
 // Puts a lead into a status at a position (before another lead, or last) without saving or redrawing.
 function placeLead(p, lead, statusId, beforeId) {
@@ -1425,7 +1420,7 @@ function requestMove(id, statusId, beforeId) {
   if (action === 'meeting') { openLead(id, { transition: { kind: 'status', statusId, beforeId } }); return; }
   if (action === 'followup') { openFollowUp(lead, status, beforeId); return; }
   moveLead(id, statusId, beforeId);
-  if (MAIL_ACTIONS.has(action)) startMailFlow(id, action, status);
+  if (MAIL_ACTIONS.has(action)) openComposer(id, action, status);
 }
 
 /* ---- "follow-up required" popup ---- */
@@ -1493,29 +1488,23 @@ function buildTemplateEditor(status, shown) {
     h('div', { class: 'hint' }, 'נוסח ברירת מחדל למייל. נטען לחלון המייל ואפשר לערוך אותו בכל שליחה. לחיצה על שדה מוסיפה אותו בנקודה שבה עמדת, והוא יתמלא מפרטי הליד:'),
     subject, body, h('div', { class: 'tpl-vars' }, ...vars));
 }
-// The price quote of a status whose rule is "summary": the quote itself (title + text, drawn into a PDF) and the default
-// text of the email that carries it. Both use the same lead fields as the other email texts.
+// The price quote of a status whose rule is "summary": a title and a text (drawn into a PDF), with the same fields as the
+// email texts. In the email popup it is added with a switch and can be edited for that email.
 function buildQuoteEditor(status, shown) {
-  const tpl = status.quoteTemplate || { title: '', body: '', mailSubject: '', mailBody: '' };
+  const tpl = status.quoteTemplate || { title: '', body: '' };
   const title = h('input', { class: 'q-title', maxlength: 200, dir: 'auto', placeholder: 'כותרת (למשל: הצעת מחיר)', 'aria-label': `כותרת הצעת מחיר: ${status.name}`, value: tpl.title });
   const body = h('textarea', { class: 'q-body', rows: 10, dir: 'auto', placeholder: 'תוכן ההצעה', 'aria-label': `תוכן הצעת מחיר: ${status.name}`, value: tpl.body });
-  const mailSubject = h('input', { class: 'q-mail-subject', maxlength: 300, dir: 'auto', placeholder: 'נושא המייל', 'aria-label': `נושא מייל ההצעה: ${status.name}`, value: tpl.mailSubject });
-  const mailBody = h('textarea', { class: 'q-mail-body', rows: 4, dir: 'auto', placeholder: 'תוכן המייל', 'aria-label': `תוכן מייל ההצעה: ${status.name}`, value: tpl.mailBody });
-  const fields = [title, body, mailSubject, mailBody];
   let last = body; // the field the buttons below insert into
-  for (const f of fields) f.addEventListener('focus', () => { last = f; });
+  title.addEventListener('focus', () => { last = title; });
+  body.addEventListener('focus', () => { last = body; });
   const vars = Object.keys(TEMPLATE_VARS).map(k => h('button', { type: 'button', class: 'link q-var', onclick: () => insertAtCursor(last, `{${k}}`) }, `{${k}}`));
   const sample = h('button', { type: 'button', class: 'link', onclick: async () => {
-    if (fields.some(f => f.value.trim()) && !(await askConfirm('נוסח לדוגמה', 'מה שכתבת כאן יוחלף בנוסח לדוגמה.', 'החלף'))) return;
+    if ((title.value.trim() || body.value.trim()) && !(await askConfirm('נוסח לדוגמה', 'מה שכתבת כאן יוחלף בנוסח לדוגמה.', 'החלף'))) return;
     title.value = QUOTE_SAMPLE.title; body.value = QUOTE_SAMPLE.body;
-    mailSubject.value = QUOTE_SAMPLE.mailSubject; mailBody.value = QUOTE_SAMPLE.mailBody;
   } }, 'הכנס נוסח לדוגמה');
   return h('div', { class: 'auto-quote', hidden: !shown, 'data-status': status.id },
-    h('div', { class: 'hint' }, 'הצעת מחיר (PDF). אחרי שליד נכנס לסטטוס הזה המערכת שואלת אם לשלוח הצעת מחיר: "כן" פותח את חלון ההצעה (במקום סיכום הפגישה), "לא" פותח את סיכום הפגישה. בלי הצעה כאן לא נשאלת השאלה. לחיצה על שדה מוסיפה אותו בנקודה שבה עמדת. כל שדה אחר שתכתוב בסוגריים מסולסלים בהצעה, למשל {מחיר}, הופך לתיבה שממלאים בחלון ההצעה:'),
-    title, body,
-    h('div', { class: 'hint' }, 'נוסח המייל שנשלח עם ההצעה (בו אפשר להשתמש בשדות הליד בלבד):'),
-    mailSubject, mailBody,
-    h('div', { class: 'tpl-vars' }, ...vars, sample));
+    h('div', { class: 'hint' }, 'הצעת מחיר (PDF). בחלון הסיכום יש מתג "כלול הצעת מחיר": כשמדליקים אותו הטקסט הזה מופיע שם, עם פרטי הליד, ואפשר לערוך אותו לפני השליחה. לחיצה על שדה מוסיפה אותו בנקודה שבה עמדת:'),
+    title, body, h('div', { class: 'tpl-vars' }, ...vars, sample));
 }
 function openAutomation() {
   const p = activePipeline();
@@ -1563,11 +1552,8 @@ function saveAutomation() {
     if (editor.hidden) continue;
     const s = p.statuses.find(x => x.id === editor.dataset.status);
     if (!s) continue;
-    const q = {
-      title: editor.querySelector('.q-title').value.trim(), body: editor.querySelector('.q-body').value.replace(/\s+$/, ''),
-      mailSubject: editor.querySelector('.q-mail-subject').value.trim(), mailBody: editor.querySelector('.q-mail-body').value.replace(/\s+$/, ''),
-    };
-    if (Object.values(q).some(v => v.trim())) s.quoteTemplate = q; else delete s.quoteTemplate;
+    const q = { title: editor.querySelector('.q-title').value.trim(), body: editor.querySelector('.q-body').value.replace(/\s+$/, '') };
+    if (q.title || q.body.trim()) s.quoteTemplate = q; else delete s.quoteTemplate;
   }
   $('#autoDialog').close();
   commit();
@@ -2100,36 +2086,18 @@ async function googleDeleteTestEvent() {
 }
 
 /* ---- price quote (PDF) ---- */
-// The quote is a text template (title + body) written in the automation settings. Besides the lead's own fields
-// ({שם}, {חברה}, ...), any other {field} in it becomes a box to fill in before sending. The text is drawn on a canvas
+// The quote is a text template (title + body) written in the automation settings. The lead's fields ({שם}, {חברה}, ...)
+// are filled in when the email popup opens, and the text can be edited there. The text is drawn on a canvas
 // and saved as an A4 PDF (one picture per page, written by hand below), so it needs no library and works offline.
 // The PDF's text is part of the picture, which means it cannot be selected or searched.
 const PDF_W = 794, PDF_H = 1123, PDF_SCALE = 2; // A4 at 96 dpi, drawn at twice the size for sharpness
 const PDF_FONT = 'Arial, "Noto Sans Hebrew", "Segoe UI", sans-serif';
 const QUOTE_SAMPLE = {
   title: 'הצעת מחיר',
-  body: 'תאריך: {תאריך}\nעבור: {שם}\n\nשלום {שם פרטי},\nבהמשך לפגישתנו, זו ההצעה שלנו:\n\nשירות: {תיאור השירות}\nמחיר: {מחיר}\nתוקף ההצעה: {תוקף ההצעה}\n\nלשאלות אני זמין בטלפון.',
-  mailSubject: 'הצעת מחיר',
-  mailBody: 'שלום {שם פרטי},\nבהמשך לפגישתנו, מצורפת הצעת המחיר.\nאשמח לשמוע ממך.',
+  body: 'תאריך: {תאריך}\nעבור: {שם}\n\nשלום {שם פרטי},\nבהמשך לפגישתנו, זו ההצעה שלנו:\n\nשירות: (תיאור השירות)\nמחיר: (המחיר)\nתוקף ההצעה: (תוקף)\n\nלשאלות אני זמין בטלפון.',
 };
-// Fields of the template that are not lead fields, in the order they first appear.
-function quoteFieldNames(tpl) {
-  const names = [];
-  for (const m of `${tpl.title}\n${tpl.body}`.matchAll(/\{([^{}]+)\}/g)) {
-    const k = m[1].trim();
-    if (!TEMPLATE_VARS[k] && !names.includes(k)) names.push(k);
-  }
-  return names;
-}
-// One pass over the text: lead fields from the lead, the other fields from `values`. A field with no value stays as {…}.
-function renderQuote(tpl, lead, values) {
-  const fill = text => String(text ?? '').replace(/\{([^{}]+)\}/g, (all, key) => {
-    const k = key.trim();
-    const v = TEMPLATE_VARS[k] ? TEMPLATE_VARS[k](lead) : values[k];
-    return v || all;
-  });
-  return { title: fill(tpl.title).trim(), body: fill(tpl.body).replace(/\s+$/, '') };
-}
+// The template text with the lead's fields filled in (a field the lead has no value for stays as {…}).
+const renderQuote = (tpl, lead) => ({ title: renderTemplate(tpl.title, lead).trim(), body: renderTemplate(tpl.body, lead).replace(/\s+$/, '') });
 function drawQuotePages({ title, body }) {
   const M = 56, TOP = 64, BOTTOM = PDF_H - 64, TEXT_W = PDF_W - 2 * M;
   const pages = [];
@@ -2301,69 +2269,31 @@ async function onSigAction() {
     if (mailCtx === ctx) { renderSignature(ctx); if (!ctx.busy) $('#mailSend').disabled = !googleClientId(); }
   }
 }
-// After a lead enters a "summary" status that has a quote, ask: yes opens the quote email (it takes the place of the
-// meeting summary), no opens the usual meeting summary. Closing the question (Esc) opens neither and leaves the lead there.
-let quoteAskResolve = null;
-function askQuoteChoice(lead, status) {
-  return new Promise(resolve => {
-    quoteAskResolve = resolve;
-    $('#qaTitle').textContent = `${status.name}: ${lead.name}`;
-    $('#qaMsg').textContent = 'לשלוח הצעת מחיר ללקוח? "כן" פותח את חלון ההצעה, והוא מחליף את סיכום הפגישה במייל. "לא" פותח את סיכום הפגישה.';
-    $('#quoteAskDialog').showModal();
-    $('#qaYes').focus();
-  });
-}
-function answerQuoteChoice(value) {
-  const resolve = quoteAskResolve;
-  quoteAskResolve = null;
-  if ($('#quoteAskDialog').open) $('#quoteAskDialog').close();
-  if (resolve) resolve(value);
-}
-async function startMailFlow(leadId, action, status) {
-  const p = activePipeline();
-  const lead = p && p.leads.find(l => l.id === leadId);
-  if (!lead || $('#mailDialog').open || $('#quoteAskDialog').open) return;
-  if (action === 'summary' && hasQuote(status)) {
-    const choice = await askQuoteChoice(lead, status);
-    if (!choice) return;
-    openComposer(leadId, action, status, { quote: choice === 'yes' });
-    return;
-  }
-  openComposer(leadId, action, status);
-}
-// The quote box under the text, in the quote email: the template's own fields, and a preview of the PDF.
+// The quote under the email text: a switch, and when it is on the template's text with this lead's details, editable for this
+// email only, with a preview of the PDF.
 function setQuoteError(msg) { const el = $('#qError'); el.textContent = msg; el.hidden = !msg; }
-function renderQuoteBox(ctx) {
+function renderQuoteBox(ctx, lead) {
   const tpl = ctx.quoteTpl;
   $('#qBox').hidden = !tpl;
+  $('#qOn').checked = false;
+  $('#qFields').hidden = true;
   setQuoteError('');
   if (!tpl) return;
-  const names = quoteFieldNames(tpl);
-  $('#qHint').textContent = `ההצעה נבנית מהנוסח שהוגדר ב"אוטומציה" ומצורפת כקובץ PDF. אחרי שליחה הליד עובר ל"${QUOTE_SENT_STATUS}".${names.length ? ' מלא את השדות:' : ''}`;
-  $('#qInputs').replaceChildren(...names.map((n, i) => h('div', {},
-    h('label', { for: `qf${i}` }, n),
-    h('input', { id: `qf${i}`, 'data-q': n, dir: 'auto', maxlength: 300, oninput: e => e.target.setCustomValidity('') }))));
+  const q = renderQuote(tpl, lead);
+  $('#qTitle').value = q.title;
+  $('#qBody').value = q.body;
+  $('#qHint').textContent = `הטקסט נטען מנוסח ההצעה שהוגדר ב"אוטומציה". אפשר לערוך אותו כאן, והעריכה חלה על המייל הזה בלבד. ההצעה מצורפת כקובץ PDF, ואחרי שליחה הליד עובר ל"${QUOTE_SENT_STATUS}".`;
 }
-// { field: value } of the quote boxes. With `needAll`, the first empty one is flagged and null is returned.
-function readQuoteValues(needAll) {
-  const values = {};
-  for (const inp of $('#qInputs').querySelectorAll('input')) {
-    const v = inp.value.trim();
-    if (!v && needAll) { inp.setCustomValidity('יש למלא את השדה'); inp.reportValidity(); return null; }
-    values[inp.dataset.q] = v;
-  }
-  return values;
-}
+// The quote as it is in the boxes now: { title, body }.
+const readQuote = () => ({ title: $('#qTitle').value.trim(), body: $('#qBody').value.replace(/\s+$/, '') });
 async function previewQuote() {
   const ctx = mailCtx;
-  const p = activePipeline();
-  const lead = p && ctx && p.leads.find(l => l.id === ctx.leadId);
-  if (!lead || !ctx.quoteTpl) return;
+  if (!ctx || !ctx.quoteTpl) return;
   setQuoteError('');
   const win = window.open('', '_blank'); // opened first, while the click still counts, then pointed at the PDF
   if (!win) { setQuoteError('הדפדפן חסם את החלון. אפשר חלונות קופצים לכתובת הזו ולחץ שוב.'); return; }
   try {
-    const bytes = quotePdf(renderQuote(ctx.quoteTpl, lead, readQuoteValues(false)));
+    const bytes = quotePdf(readQuote());
     const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
     win.location.href = url;
     setTimeout(() => URL.revokeObjectURL(url), 120000);
@@ -2372,23 +2302,21 @@ async function previewQuote() {
     setQuoteError(`לא הצלחתי להכין את ההצעה: ${e.message}`);
   }
 }
-function openComposer(leadId, kind, status, opts = {}) {
+function openComposer(leadId, kind, status) {
   const p = activePipeline();
   const lead = p && p.leads.find(l => l.id === leadId);
   if (!lead || $('#mailDialog').open) return;
-  const quoteMode = !!opts.quote && kind === 'summary' && hasQuote(status); // the quote email, instead of the meeting summary
-  mailCtx = { leadId, busy: false, confirming: false, quoteTpl: quoteMode ? status.quoteTemplate : null, sig: { state: 'off' }, sigOn: true, sigLoad: null, sigBusy: false, sigNotice: '' };
+  mailCtx = { leadId, busy: false, confirming: false, quoteTpl: kind === 'summary' && hasQuote(status) ? status.quoteTemplate : null, sig: { state: 'off' }, sigOn: true, sigLoad: null, sigBusy: false, sigNotice: '' };
   const ready = !!googleClientId();
-  // The text of the email: the quote email's own default when sending a quote, otherwise the status's usual one.
-  const tpl = quoteMode ? { subject: status.quoteTemplate.mailSubject, body: status.quoteTemplate.mailBody } : status.mailTemplate;
-  const hasText = !!(tpl && (tpl.subject.trim() || tpl.body.trim()));
-  $('#mailTitle').textContent = quoteMode ? `הצעת מחיר: ${lead.name}` : `${MAIL_TITLE[kind] || 'מייל'}: ${lead.name}`;
+  const tpl = status.mailTemplate;
+  const hasText = !!tpl;
+  $('#mailTitle').textContent = `${MAIL_TITLE[kind] || 'מייל'}: ${lead.name}`;
   $('#mailInfo').textContent = `הליד כבר עבר ל"${status.name}". שליחת מייל היא לא חובה: "אל תשלח" משאיר אותו שם בלי לשלוח כלום.`;
   $('#mTo').value = lead.email;
   $('#mSubject').value = hasText ? renderTemplate(tpl.subject, lead) : '';
   $('#mBody').value = hasText ? renderTemplate(tpl.body, lead) : '';
   $('#mailTpl').textContent = hasText
-    ? `הנושא והתוכן נטענו מנוסח ברירת המחדל${quoteMode ? ' של מייל ההצעה' : ''}. אפשר לערוך אותם לפני השליחה, והעריכה חלה על המייל הזה בלבד. לשינוי קבוע: כפתור "אוטומציה".`
+    ? `הנושא והתוכן נטענו מנוסח ברירת המחדל. אפשר לערוך אותם לפני השליחה, והעריכה חלה על המייל הזה בלבד. לשינוי קבוע: כפתור "אוטומציה".`
     : 'אפשר להגדיר נוסח ברירת מחדל בכפתור "אוטומציה", כדי לא לכתוב מאפס בכל פעם.';
   $('#mailFrom').textContent = ready
     ? `יישלח מהחשבון שלך${gg.email ? ` (${gg.email})` : ''}, ויישמר גם כהערה בליד.`
@@ -2398,11 +2326,10 @@ function openComposer(leadId, kind, status, opts = {}) {
   $('#mailSend').textContent = 'שלח';
   $('#mailSkip').disabled = false;
   $('#mailSkip').textContent = 'אל תשלח';
-  renderQuoteBox(mailCtx);
+  renderQuoteBox(mailCtx, lead);
   renderSignature(mailCtx);
   $('#mailDialog').showModal();
-  const firstQuoteBox = quoteMode ? $('#qInputs').querySelector('input') : null;
-  (!lead.email ? $('#mTo') : firstQuoteBox || (hasText ? $('#mBody') : $('#mSubject'))).focus();
+  (!lead.email ? $('#mTo') : hasText ? $('#mBody') : $('#mSubject')).focus();
   // Read from Gmail on every open, so a change made there shows up here.
   const ctx = mailCtx;
   ctx.sigLoad = loadSignature(ctx);
@@ -2417,12 +2344,12 @@ async function sendMail() {
   for (const [value, id] of [[subject, '#mSubject'], [body, '#mBody']]) {
     if (!value) { $(id).value = ''; $(id).reportValidity(); return; }
   }
-  // A quote to attach: its boxes are checked now, before anything else happens.
+  // A quote to attach (the switch is on): what is in its boxes now is what goes into the PDF.
   let quote = null;
-  if (ctx.quoteTpl) {
-    const values = readQuoteValues(true);
-    if (!values) return;
-    quote = { values, text: renderQuote(ctx.quoteTpl, lead || { name: '', phone: '', company: '', meeting: null }, values) };
+  if (ctx.quoteTpl && $('#qOn').checked) {
+    const text = readQuote();
+    if (!text.title && !text.body.trim()) { $('#qBody').setCustomValidity('הצעת המחיר ריקה'); $('#qBody').reportValidity(); return; }
+    quote = { text };
   }
   // The signature is read from Gmail, which needs a connection. If there was none when the window opened, connect now,
   // read it, and show it before anything goes out.
@@ -2451,9 +2378,9 @@ async function sendMail() {
     }
   }
   // A template field this lead has no value for (say {חברה}) is still in the text: ask before it goes out as it is.
-  // In the quote email, any {field} left in the email text is a mistake (those are only filled in the quote itself).
-  const stray = quote ? [...new Set(`${subject}\n${body}`.match(/\{[^{}]+\}/g) || [])] : [];
-  const unfilled = [...new Set([...unfilledVars(`${subject}\n${body}${quote ? `\n${quote.text.title}\n${quote.text.body}` : ''}`), ...stray])];
+  // In the quote, any {field} still there (a lead field with no value, or a placeholder not yet replaced) is asked about too.
+  const inQuote = quote ? [...new Set(`${quote.text.title}\n${quote.text.body}`.match(/\{[^{}]+\}/g) || [])] : [];
+  const unfilled = [...new Set([...unfilledVars(`${subject}\n${body}`), ...inQuote])];
   if (unfilled.length) {
     ctx.confirming = true;
     const go = await askConfirm('יש שדות שלא מולאו', `בטקסט נשארו: ${unfilled.join(' ')}. לשלוח בכל זאת?`, 'שלח בכל זאת');
@@ -2486,8 +2413,7 @@ async function sendMail() {
   let movedTo = null;
   if (lead) {
     if (!lead.email) lead.email = to; // a lead without an address keeps the one typed here
-    const fields = quote ? Object.entries(quote.values).map(([k, v]) => `\n${k}: ${v}`).join('') : '';
-    const quoteNote = quote ? `\n\nצורפה הצעת מחיר (PDF): ${quoteFileName(lead)}${fields}` : '';
+    const quoteNote = quote ? `\n\nצורפה הצעת מחיר (PDF): ${quoteFileName(lead)}\n${quote.text.title}\n${quote.text.body}` : '';
     lead.notes.push({ id: uid(), text: `נשלח מייל אל ${to}\nנושא: ${subject}\n\n${body}${quoteNote}`, at: Date.now() });
     // A quote that went out moves the lead on (without running that status's own rule); a summary alone leaves it where it is.
     if (quote) {
@@ -2954,9 +2880,11 @@ $('#gDelTest').addEventListener('click', googleDeleteTestEvent);
 $('#gClose').addEventListener('click', () => $('#googleDialog').close());
 $('#mailForm').addEventListener('submit', e => { e.preventDefault(); sendMail(); });
 $('#qPreview').addEventListener('click', previewQuote);
-$('#qaYes').addEventListener('click', () => answerQuoteChoice('yes'));
-$('#qaNo').addEventListener('click', () => answerQuoteChoice('no'));
-$('#quoteAskDialog').addEventListener('close', () => answerQuoteChoice(null)); // Esc
+$('#qOn').addEventListener('change', () => {
+  $('#qFields').hidden = !$('#qOn').checked;
+  if ($('#qOn').checked) $('#qBody').focus();
+});
+for (const sel of ['#qTitle', '#qBody']) $(sel).addEventListener('input', () => $('#qBody').setCustomValidity(''));
 $('#mSigAct').addEventListener('click', onSigAction);
 $('#mSigOn').addEventListener('change', () => { if (mailCtx) mailCtx.sigOn = $('#mSigOn').checked; });
 $('#mailSkip').addEventListener('click', () => { if (!(mailCtx && mailCtx.busy)) $('#mailDialog').close(); });
