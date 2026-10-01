@@ -510,8 +510,8 @@
       </div>
     </div>
     <div id="qBox" class="sig-box" hidden>
-      <label class="check"><input type="checkbox" id="qOn"><span>צרף הצעת מחיר (PDF) למייל</span></label>
-      <div id="qFields" hidden>
+      <div class="sig-title">הצעת מחיר (PDF)</div>
+      <div id="qFields">
         <p id="qHint" class="hint"></p>
         <div id="qInputs" class="q-inputs"></div>
         <button id="qPreview" type="button">תצוגה מקדימה של ההצעה</button>
@@ -532,6 +532,15 @@
       <button id="mailSkip" type="button">אל תשלח</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="quoteAskDialog">
+  <h3 id="qaTitle"></h3>
+  <p id="qaMsg"></p>
+  <div class="actions">
+    <button id="qaYes" class="primary">כן, שלח הצעת מחיר</button>
+    <button id="qaNo" type="button">לא, סיכום פגישה</button>
+  </div>
 </dialog>
 
 <dialog id="followDialog">
@@ -639,8 +648,10 @@ const iconBtn = (glyph, label, onclick, disabled = false) =>
 //      (meeting, followup). For 'email' and 'summary' the lead moves first and the popup only offers to send an email.
 // Status.mailTemplate: undefined | { subject, body } -> the default text of that status's email popup. It may hold
 //   fields like {שם פרטי} that are filled from the lead when the popup opens (see TEMPLATE_VARS).
-// Status.quoteTemplate: undefined | { title, body } -> the price quote attached to that status's email popup (only a status
-//   whose rule is "summary" uses it). Besides the lead fields, any other {field} in the text becomes a box to fill in the popup.
+// Status.quoteTemplate: undefined | { title, body, mailSubject, mailBody } -> the price quote of a status whose rule is
+//   "summary": title + body make the PDF (besides the lead fields, any other {field} becomes a box to fill in), and
+//   mailSubject + mailBody are the default text of the email that carries it. After a lead enters that status the user is
+//   asked whether to send a quote: yes opens the quote email, no opens the usual meeting summary.
 // "Last contact" is not stored: it is the timestamp of the newest note.
 // A lead with an outcome is off the board but keeps its last statusId, so "return to board" restores it.
 const DEFAULT_STATUSES = ['חדש', 'בקשר', 'פגישה', 'הצעת מחיר'];
@@ -674,9 +685,11 @@ function defaultState() {
 }
 function normalizeQuoteTemplate(t) {
   if (!t || typeof t !== 'object') return undefined;
-  const title = String(t.title ?? ''), body = String(t.body ?? '');
-  return title.trim() || body.trim() ? { title, body } : undefined;
+  const q = { title: String(t.title ?? ''), body: String(t.body ?? ''), mailSubject: String(t.mailSubject ?? ''), mailBody: String(t.mailBody ?? '') };
+  return Object.values(q).some(v => v.trim()) ? q : undefined;
 }
+// A quote needs something to put in the PDF; a template with only email text does not count.
+const hasQuote = status => !!(status && status.quoteTemplate && (status.quoteTemplate.title.trim() || status.quoteTemplate.body.trim()));
 function normalizeMailTemplate(t) {
   if (!t || typeof t !== 'object') return undefined;
   const subject = String(t.subject ?? ''), body = String(t.body ?? '');
@@ -1384,7 +1397,7 @@ async function saveLead(opts = {}) {
     showToast(`הליד "${lead.name}" הועבר ל${move.label}`, `הצג את "${move.target.name}"`,
       () => { state.activePipelineId = move.target.id; commit(); });
   }
-  if (entering && MAIL_ACTIONS.has(entering.action) && saved) openComposer(saved.id, entering.action, entering.status);
+  if (entering && MAIL_ACTIONS.has(entering.action) && saved) startMailFlow(saved.id, entering.action, entering.status);
 }
 // Puts a lead into a status at a position (before another lead, or last) without saving or redrawing.
 function placeLead(p, lead, statusId, beforeId) {
@@ -1412,7 +1425,7 @@ function requestMove(id, statusId, beforeId) {
   if (action === 'meeting') { openLead(id, { transition: { kind: 'status', statusId, beforeId } }); return; }
   if (action === 'followup') { openFollowUp(lead, status, beforeId); return; }
   moveLead(id, statusId, beforeId);
-  if (MAIL_ACTIONS.has(action)) openComposer(id, action, status);
+  if (MAIL_ACTIONS.has(action)) startMailFlow(id, action, status);
 }
 
 /* ---- "follow-up required" popup ---- */
@@ -1480,22 +1493,29 @@ function buildTemplateEditor(status, shown) {
     h('div', { class: 'hint' }, 'נוסח ברירת מחדל למייל. נטען לחלון המייל ואפשר לערוך אותו בכל שליחה. לחיצה על שדה מוסיפה אותו בנקודה שבה עמדת, והוא יתמלא מפרטי הליד:'),
     subject, body, h('div', { class: 'tpl-vars' }, ...vars));
 }
-// The price quote of a status whose rule is "summary": a title and a text, with the same fields as the email text.
+// The price quote of a status whose rule is "summary": the quote itself (title + text, drawn into a PDF) and the default
+// text of the email that carries it. Both use the same lead fields as the other email texts.
 function buildQuoteEditor(status, shown) {
-  const tpl = status.quoteTemplate || { title: '', body: '' };
+  const tpl = status.quoteTemplate || { title: '', body: '', mailSubject: '', mailBody: '' };
   const title = h('input', { class: 'q-title', maxlength: 200, dir: 'auto', placeholder: 'כותרת (למשל: הצעת מחיר)', 'aria-label': `כותרת הצעת מחיר: ${status.name}`, value: tpl.title });
-  const body = h('textarea', { class: 'q-body', rows: 11, dir: 'auto', placeholder: 'תוכן ההצעה', 'aria-label': `תוכן הצעת מחיר: ${status.name}`, value: tpl.body });
-  let last = body;
-  title.addEventListener('focus', () => { last = title; });
-  body.addEventListener('focus', () => { last = body; });
+  const body = h('textarea', { class: 'q-body', rows: 10, dir: 'auto', placeholder: 'תוכן ההצעה', 'aria-label': `תוכן הצעת מחיר: ${status.name}`, value: tpl.body });
+  const mailSubject = h('input', { class: 'q-mail-subject', maxlength: 300, dir: 'auto', placeholder: 'נושא המייל', 'aria-label': `נושא מייל ההצעה: ${status.name}`, value: tpl.mailSubject });
+  const mailBody = h('textarea', { class: 'q-mail-body', rows: 4, dir: 'auto', placeholder: 'תוכן המייל', 'aria-label': `תוכן מייל ההצעה: ${status.name}`, value: tpl.mailBody });
+  const fields = [title, body, mailSubject, mailBody];
+  let last = body; // the field the buttons below insert into
+  for (const f of fields) f.addEventListener('focus', () => { last = f; });
   const vars = Object.keys(TEMPLATE_VARS).map(k => h('button', { type: 'button', class: 'link q-var', onclick: () => insertAtCursor(last, `{${k}}`) }, `{${k}}`));
   const sample = h('button', { type: 'button', class: 'link', onclick: async () => {
-    if ((title.value.trim() || body.value.trim()) && !(await askConfirm('נוסח לדוגמה', 'הנוסח שכתבת כאן יוחלף בנוסח לדוגמה.', 'החלף'))) return;
+    if (fields.some(f => f.value.trim()) && !(await askConfirm('נוסח לדוגמה', 'מה שכתבת כאן יוחלף בנוסח לדוגמה.', 'החלף'))) return;
     title.value = QUOTE_SAMPLE.title; body.value = QUOTE_SAMPLE.body;
+    mailSubject.value = QUOTE_SAMPLE.mailSubject; mailBody.value = QUOTE_SAMPLE.mailBody;
   } }, 'הכנס נוסח לדוגמה');
   return h('div', { class: 'auto-quote', hidden: !shown, 'data-status': status.id },
-    h('div', { class: 'hint' }, 'הצעת מחיר (PDF). בחלון הסיכום אפשר לצרף אותה למייל. שדות הליד לחיצה עליהם מוסיפה אותם. כל שדה אחר שתכתוב בסוגריים מסולסלים, למשל {מחיר}, הופך לתיבה שממלאים בחלון המייל לפני השליחה:'),
-    title, body, h('div', { class: 'tpl-vars' }, ...vars, sample));
+    h('div', { class: 'hint' }, 'הצעת מחיר (PDF). אחרי שליד נכנס לסטטוס הזה המערכת שואלת אם לשלוח הצעת מחיר: "כן" פותח את חלון ההצעה (במקום סיכום הפגישה), "לא" פותח את סיכום הפגישה. בלי הצעה כאן לא נשאלת השאלה. לחיצה על שדה מוסיפה אותו בנקודה שבה עמדת. כל שדה אחר שתכתוב בסוגריים מסולסלים בהצעה, למשל {מחיר}, הופך לתיבה שממלאים בחלון ההצעה:'),
+    title, body,
+    h('div', { class: 'hint' }, 'נוסח המייל שנשלח עם ההצעה (בו אפשר להשתמש בשדות הליד בלבד):'),
+    mailSubject, mailBody,
+    h('div', { class: 'tpl-vars' }, ...vars, sample));
 }
 function openAutomation() {
   const p = activePipeline();
@@ -1543,9 +1563,11 @@ function saveAutomation() {
     if (editor.hidden) continue;
     const s = p.statuses.find(x => x.id === editor.dataset.status);
     if (!s) continue;
-    const title = editor.querySelector('.q-title').value.trim();
-    const body = editor.querySelector('.q-body').value.replace(/\s+$/, '');
-    if (title || body.trim()) s.quoteTemplate = { title, body }; else delete s.quoteTemplate;
+    const q = {
+      title: editor.querySelector('.q-title').value.trim(), body: editor.querySelector('.q-body').value.replace(/\s+$/, ''),
+      mailSubject: editor.querySelector('.q-mail-subject').value.trim(), mailBody: editor.querySelector('.q-mail-body').value.replace(/\s+$/, ''),
+    };
+    if (Object.values(q).some(v => v.trim())) s.quoteTemplate = q; else delete s.quoteTemplate;
   }
   $('#autoDialog').close();
   commit();
@@ -2087,6 +2109,8 @@ const PDF_FONT = 'Arial, "Noto Sans Hebrew", "Segoe UI", sans-serif';
 const QUOTE_SAMPLE = {
   title: 'הצעת מחיר',
   body: 'תאריך: {תאריך}\nעבור: {שם}\n\nשלום {שם פרטי},\nבהמשך לפגישתנו, זו ההצעה שלנו:\n\nשירות: {תיאור השירות}\nמחיר: {מחיר}\nתוקף ההצעה: {תוקף ההצעה}\n\nלשאלות אני זמין בטלפון.',
+  mailSubject: 'הצעת מחיר',
+  mailBody: 'שלום {שם פרטי},\nבהמשך לפגישתנו, מצורפת הצעת המחיר.\nאשמח לשמוע ממך.',
 };
 // Fields of the template that are not lead fields, in the order they first appear.
 function quoteFieldNames(tpl) {
@@ -2277,13 +2301,41 @@ async function onSigAction() {
     if (mailCtx === ctx) { renderSignature(ctx); if (!ctx.busy) $('#mailSend').disabled = !googleClientId(); }
   }
 }
-// The quote box under the text: shown only when the status has a quote template; ticking it asks for the template's own fields.
+// After a lead enters a "summary" status that has a quote, ask: yes opens the quote email (it takes the place of the
+// meeting summary), no opens the usual meeting summary. Closing the question (Esc) opens neither and leaves the lead there.
+let quoteAskResolve = null;
+function askQuoteChoice(lead, status) {
+  return new Promise(resolve => {
+    quoteAskResolve = resolve;
+    $('#qaTitle').textContent = `${status.name}: ${lead.name}`;
+    $('#qaMsg').textContent = 'לשלוח הצעת מחיר ללקוח? "כן" פותח את חלון ההצעה, והוא מחליף את סיכום הפגישה במייל. "לא" פותח את סיכום הפגישה.';
+    $('#quoteAskDialog').showModal();
+    $('#qaYes').focus();
+  });
+}
+function answerQuoteChoice(value) {
+  const resolve = quoteAskResolve;
+  quoteAskResolve = null;
+  if ($('#quoteAskDialog').open) $('#quoteAskDialog').close();
+  if (resolve) resolve(value);
+}
+async function startMailFlow(leadId, action, status) {
+  const p = activePipeline();
+  const lead = p && p.leads.find(l => l.id === leadId);
+  if (!lead || $('#mailDialog').open || $('#quoteAskDialog').open) return;
+  if (action === 'summary' && hasQuote(status)) {
+    const choice = await askQuoteChoice(lead, status);
+    if (!choice) return;
+    openComposer(leadId, action, status, { quote: choice === 'yes' });
+    return;
+  }
+  openComposer(leadId, action, status);
+}
+// The quote box under the text, in the quote email: the template's own fields, and a preview of the PDF.
 function setQuoteError(msg) { const el = $('#qError'); el.textContent = msg; el.hidden = !msg; }
 function renderQuoteBox(ctx) {
   const tpl = ctx.quoteTpl;
   $('#qBox').hidden = !tpl;
-  $('#qOn').checked = false;
-  $('#qFields').hidden = true;
   setQuoteError('');
   if (!tpl) return;
   const names = quoteFieldNames(tpl);
@@ -2320,20 +2372,23 @@ async function previewQuote() {
     setQuoteError(`לא הצלחתי להכין את ההצעה: ${e.message}`);
   }
 }
-function openComposer(leadId, kind, status) {
+function openComposer(leadId, kind, status, opts = {}) {
   const p = activePipeline();
   const lead = p && p.leads.find(l => l.id === leadId);
   if (!lead || $('#mailDialog').open) return;
-  mailCtx = { leadId, busy: false, confirming: false, quoteTpl: kind === 'summary' && status.quoteTemplate ? status.quoteTemplate : null, sig: { state: 'off' }, sigOn: true, sigLoad: null, sigBusy: false, sigNotice: '' };
+  const quoteMode = !!opts.quote && kind === 'summary' && hasQuote(status); // the quote email, instead of the meeting summary
+  mailCtx = { leadId, busy: false, confirming: false, quoteTpl: quoteMode ? status.quoteTemplate : null, sig: { state: 'off' }, sigOn: true, sigLoad: null, sigBusy: false, sigNotice: '' };
   const ready = !!googleClientId();
-  const tpl = status.mailTemplate;
-  $('#mailTitle').textContent = `${MAIL_TITLE[kind] || 'מייל'}: ${lead.name}`;
+  // The text of the email: the quote email's own default when sending a quote, otherwise the status's usual one.
+  const tpl = quoteMode ? { subject: status.quoteTemplate.mailSubject, body: status.quoteTemplate.mailBody } : status.mailTemplate;
+  const hasText = !!(tpl && (tpl.subject.trim() || tpl.body.trim()));
+  $('#mailTitle').textContent = quoteMode ? `הצעת מחיר: ${lead.name}` : `${MAIL_TITLE[kind] || 'מייל'}: ${lead.name}`;
   $('#mailInfo').textContent = `הליד כבר עבר ל"${status.name}". שליחת מייל היא לא חובה: "אל תשלח" משאיר אותו שם בלי לשלוח כלום.`;
   $('#mTo').value = lead.email;
-  $('#mSubject').value = tpl ? renderTemplate(tpl.subject, lead) : '';
-  $('#mBody').value = tpl ? renderTemplate(tpl.body, lead) : '';
-  $('#mailTpl').textContent = tpl
-    ? 'הנושא והתוכן נטענו מנוסח ברירת המחדל. אפשר לערוך אותם לפני השליחה, והעריכה חלה על המייל הזה בלבד. לשינוי קבוע: כפתור "אוטומציה".'
+  $('#mSubject').value = hasText ? renderTemplate(tpl.subject, lead) : '';
+  $('#mBody').value = hasText ? renderTemplate(tpl.body, lead) : '';
+  $('#mailTpl').textContent = hasText
+    ? `הנושא והתוכן נטענו מנוסח ברירת המחדל${quoteMode ? ' של מייל ההצעה' : ''}. אפשר לערוך אותם לפני השליחה, והעריכה חלה על המייל הזה בלבד. לשינוי קבוע: כפתור "אוטומציה".`
     : 'אפשר להגדיר נוסח ברירת מחדל בכפתור "אוטומציה", כדי לא לכתוב מאפס בכל פעם.';
   $('#mailFrom').textContent = ready
     ? `יישלח מהחשבון שלך${gg.email ? ` (${gg.email})` : ''}, ויישמר גם כהערה בליד.`
@@ -2346,7 +2401,8 @@ function openComposer(leadId, kind, status) {
   renderQuoteBox(mailCtx);
   renderSignature(mailCtx);
   $('#mailDialog').showModal();
-  (!lead.email ? $('#mTo') : tpl ? $('#mBody') : $('#mSubject')).focus();
+  const firstQuoteBox = quoteMode ? $('#qInputs').querySelector('input') : null;
+  (!lead.email ? $('#mTo') : firstQuoteBox || (hasText ? $('#mBody') : $('#mSubject'))).focus();
   // Read from Gmail on every open, so a change made there shows up here.
   const ctx = mailCtx;
   ctx.sigLoad = loadSignature(ctx);
@@ -2363,7 +2419,7 @@ async function sendMail() {
   }
   // A quote to attach: its boxes are checked now, before anything else happens.
   let quote = null;
-  if (ctx.quoteTpl && $('#qOn').checked) {
+  if (ctx.quoteTpl) {
     const values = readQuoteValues(true);
     if (!values) return;
     quote = { values, text: renderQuote(ctx.quoteTpl, lead || { name: '', phone: '', company: '', meeting: null }, values) };
@@ -2395,7 +2451,9 @@ async function sendMail() {
     }
   }
   // A template field this lead has no value for (say {חברה}) is still in the text: ask before it goes out as it is.
-  const unfilled = unfilledVars(`${subject}\n${body}${quote ? `\n${quote.text.title}\n${quote.text.body}` : ''}`);
+  // In the quote email, any {field} left in the email text is a mistake (those are only filled in the quote itself).
+  const stray = quote ? [...new Set(`${subject}\n${body}`.match(/\{[^{}]+\}/g) || [])] : [];
+  const unfilled = [...new Set([...unfilledVars(`${subject}\n${body}${quote ? `\n${quote.text.title}\n${quote.text.body}` : ''}`), ...stray])];
   if (unfilled.length) {
     ctx.confirming = true;
     const go = await askConfirm('יש שדות שלא מולאו', `בטקסט נשארו: ${unfilled.join(' ')}. לשלוח בכל זאת?`, 'שלח בכל זאת');
@@ -2895,12 +2953,10 @@ $('#gTestCal').addEventListener('click', googleTestCalendar);
 $('#gDelTest').addEventListener('click', googleDeleteTestEvent);
 $('#gClose').addEventListener('click', () => $('#googleDialog').close());
 $('#mailForm').addEventListener('submit', e => { e.preventDefault(); sendMail(); });
-$('#qOn').addEventListener('change', () => {
-  $('#qFields').hidden = !$('#qOn').checked;
-  const first = $('#qInputs').querySelector('input');
-  if ($('#qOn').checked && first) first.focus();
-});
 $('#qPreview').addEventListener('click', previewQuote);
+$('#qaYes').addEventListener('click', () => answerQuoteChoice('yes'));
+$('#qaNo').addEventListener('click', () => answerQuoteChoice('no'));
+$('#quoteAskDialog').addEventListener('close', () => answerQuoteChoice(null)); // Esc
 $('#mSigAct').addEventListener('click', onSigAction);
 $('#mSigOn').addEventListener('change', () => { if (mailCtx) mailCtx.sigOn = $('#mSigOn').checked; });
 $('#mailSkip').addEventListener('click', () => { if (!(mailCtx && mailCtx.busy)) $('#mailDialog').close(); });
