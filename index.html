@@ -245,8 +245,9 @@
   .switch input:checked + .slider::after { inset-inline-start: 19px; }
   .switch input:focus-visible + .slider { outline: 2px solid var(--accent); outline-offset: 2px; }
   #qFields input, #qFields textarea { width: 100%; margin: 0 0 6px; }
-  .phone-link { color: inherit; text-decoration: none; }
-  .phone-link:hover { color: var(--accent); text-decoration: underline; }
+  .copy-btn { border: 0; background: none; color: var(--muted); padding: 3px 5px; margin-inline-start: 3px; border-radius: 6px; line-height: 0; vertical-align: middle; opacity: .75; }
+  .copy-btn:hover:not(:disabled) { opacity: 1; color: var(--accent); background: var(--line); }
+  .copy-btn.copied { color: var(--ok); opacity: 1; }
   .sig-box { margin: 0 0 10px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
   .sig-box .check { margin-bottom: 4px; font-weight: 600; }
   .sig-title { font-weight: 600; margin-bottom: 4px; }
@@ -356,7 +357,7 @@
         <input id="fName" required maxlength="120">
       </div>
       <div class="field">
-        <div class="field-head"><label for="fPhone">טלפון <span class="req">*</span></label><a id="fPhoneCall" hidden>התקשר ☎</a></div>
+        <div class="field-head"><label for="fPhone">טלפון <span class="req">*</span></label></div>
         <input id="fPhone" type="tel" required maxlength="40" dir="auto">
       </div>
       <div class="field">
@@ -788,12 +789,6 @@ function followUpInfo(lead) {
   if (lead.nextFollowUp === t) return { cls: 'today', text: `מעקב: היום${time}` };
   return { cls: '', text: `מעקב: ${fmtIso(lead.nextFollowUp)}${time}` };
 }
-// tel: address for a phone number: digits only (and a leading +), so nothing typed in the field can change what is dialled.
-function telHref(raw) {
-  const t = String(raw ?? '').trim();
-  const digits = t.replace(/\D/g, '');
-  return digits.length >= 5 ? `tel:${t.startsWith('+') ? '+' : ''}${digits}` : null;
-}
 // Only http(s) links are ever made clickable; anything else (e.g. "javascript:...") stays plain text.
 function safeUrl(raw) {
   const t = String(raw).trim();
@@ -1185,7 +1180,6 @@ function openLead(id, opts = {}) {
   const cats = new Set(state.pipelines.flatMap(x => x.leads.map(l => l.category)).filter(Boolean));
   $('#categoryList').replaceChildren(...[...cats].sort((a, b) => a.localeCompare(b, 'he')).map(c => h('option', { value: c })));
   updateWebsiteLink();
-  updatePhoneLink();
   renderLeadNotes();
   $('#leadDialog').showModal();
   (meetingMode ? $('#fMDate') : $('#fName')).focus();
@@ -1276,12 +1270,6 @@ function readMeeting() {
   const bad = guests.find(g => !EMAIL_RE.test(g));
   if (bad) return fail($('#fMGuests'), `כתובת המייל "${bad}" אינה תקינה`);
   return { date, time, endTime, location: $('#fMLoc').value.trim(), guests };
-}
-function updatePhoneLink() {
-  const href = telHref($('#fPhone').value);
-  const a = $('#fPhoneCall');
-  a.hidden = !href;
-  if (href) a.href = href; else a.removeAttribute('href');
 }
 function updateWebsiteLink() {
   const url = safeUrl($('#fWebsite').value);
@@ -2742,10 +2730,36 @@ async function removeCardItem(id, kind) {
   } finally { removingItem = false; }
 }
 
-function phoneLink(phone) {
-  const a = h('a', { class: 'ltr phone-link', href: telHref(phone), title: 'התקשר' }, phone);
-  a.setAttribute('draggable', 'false'); // a link would otherwise be dragged on its own; this way the card drags when grabbed here
-  return a;
+// Copies text to the clipboard. navigator.clipboard needs a secure page (localhost is one); otherwise the old way is tried.
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch { /* fall back */ }
+  const box = h('textarea', { value: text, readOnly: true, style: 'position:fixed;top:-100px;opacity:0' });
+  document.body.append(box);
+  box.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { /* not allowed */ }
+  box.remove();
+  return ok;
+}
+const svgEl = (tag, attrs) => { const el = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); return el; };
+function copyIcon(done) {
+  const svg = svgEl('svg', { viewBox: '0 0 16 16', width: '13', height: '13', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.6', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' });
+  if (done) svg.append(svgEl('path', { d: 'M3 8.5l3.3 3.3L13 5' }));
+  else svg.append(svgEl('rect', { x: '5.5', y: '5.5', width: '8', height: '8', rx: '1.5' }), svgEl('path', { d: 'M10.5 3.5V3A1.5 1.5 0 0 0 9 1.5H3A1.5 1.5 0 0 0 1.5 3v6A1.5 1.5 0 0 0 3 10.5h.5' }));
+  return svg;
+}
+// The small copy button next to a phone number: copies the number as it is written, and shows a ✓ for a moment.
+function copyButton(text) {
+  const btn = h('button', { type: 'button', class: 'copy-btn', 'aria-label': 'העתק מספר טלפון', title: 'העתק מספר טלפון' }, copyIcon(false));
+  btn.addEventListener('click', async e => {
+    e.stopPropagation();
+    if (!(await copyText(text))) { showToast('לא הצלחתי להעתיק. סמן את המספר והעתק ידנית.'); return; }
+    btn.classList.add('copied');
+    btn.title = 'הועתק';
+    btn.replaceChildren(copyIcon(true));
+    setTimeout(() => { btn.classList.remove('copied'); btn.title = 'העתק מספר טלפון'; btn.replaceChildren(copyIcon(false)); }, 1400);
+  });
+  return btn;
 }
 function renderCard(l) {
   const sub = [l.company, l.category].filter(Boolean);
@@ -2754,9 +2768,7 @@ function renderCard(l) {
   return h('article', { class: 'card', draggable: true, tabindex: 0, 'data-id': l.id },
     h('div', { class: 'card-name' }, l.name),
     sub.length ? h('div', { class: 'card-sub' }, ...sub.flatMap((s, i) => [i ? ' · ' : null, h('bdi', {}, s)])) : null,
-    l.phone ? h('div', { class: 'card-sub' }, telHref(l.phone)
-      ? phoneLink(l.phone)
-      : h('span', { class: 'ltr' }, l.phone)) : null,
+    l.phone ? h('div', { class: 'card-sub' }, h('span', { class: 'ltr' }, l.phone), copyButton(l.phone)) : null,
     h('div', { class: 'card-meta' },
       l.meeting ? chipWithX('meet', `פגישה: ${fmtIso(l.meeting.date)} ${l.meeting.time}${l.calendar && l.calendar.meeting ? ' · ביומן' : ''}`, 'הסר פגישה', () => removeCardItem(l.id, 'meeting')) : null,
       fu ? chipWithX(fu.cls, fu.text, 'הסר מועד מעקב', () => removeCardItem(l.id, 'follow')) : null,
@@ -2931,7 +2943,6 @@ $('#leadDelete').addEventListener('click', async () => {
   if (lead && await deleteLead(lead)) $('#leadDialog').close();
 });
 $('#fWebsite').addEventListener('input', updateWebsiteLink);
-$('#fPhone').addEventListener('input', updatePhoneLink);
 $('#fStatus').addEventListener('change', syncStatusRule);
 $('#noteAddBtn').addEventListener('click', addNote);
 $('#noteInput').addEventListener('keydown', e => {
