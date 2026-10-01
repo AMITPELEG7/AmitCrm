@@ -520,6 +520,7 @@
         <p id="qHint" class="hint"></p>
         <input id="qTitle" maxlength="200" dir="auto" placeholder="כותרת ההצעה" aria-label="כותרת ההצעה">
         <textarea id="qBody" rows="10" dir="auto" placeholder="תוכן ההצעה" aria-label="תוכן ההצעה"></textarea>
+        <button id="qSample" type="button" hidden>הכנס נוסח לדוגמה</button>
         <button id="qPreview" type="button">תצוגה מקדימה של ההצעה</button>
         <p id="qError" class="imp-error" role="alert" hidden></p>
       </div>
@@ -683,8 +684,6 @@ function normalizeQuoteTemplate(t) {
   const q = { title: String(t.title ?? ''), body: String(t.body ?? '') };
   return q.title.trim() || q.body.trim() ? q : undefined;
 }
-// A quote needs something to put in the PDF.
-const hasQuote = status => !!(status && status.quoteTemplate);
 function normalizeMailTemplate(t) {
   if (!t || typeof t !== 'object') return undefined;
   const subject = String(t.subject ?? ''), body = String(t.body ?? '');
@@ -2282,7 +2281,13 @@ function renderQuoteBox(ctx, lead) {
   const q = renderQuote(tpl, lead);
   $('#qTitle').value = q.title;
   $('#qBody').value = q.body;
-  $('#qHint').textContent = `הטקסט נטען מנוסח ההצעה שהוגדר ב"אוטומציה". אפשר לערוך אותו כאן, והעריכה חלה על המייל הזה בלבד. ההצעה מצורפת כקובץ PDF, ואחרי שליחה הליד עובר ל"${QUOTE_SENT_STATUS}".`;
+  // Without a template in the settings the boxes start empty: the quote is written here, for this email.
+  const defined = !!(tpl.title.trim() || tpl.body.trim());
+  $('#qSample').hidden = defined;
+  $('#qHint').textContent = (defined
+    ? 'הטקסט נטען מנוסח ההצעה שהוגדר ב"אוטומציה". אפשר לערוך אותו כאן, והעריכה חלה על המייל הזה בלבד.'
+    : 'עוד לא הוגדר נוסח הצעה ב"אוטומציה", ולכן התיבות ריקות. אפשר לכתוב כאן את ההצעה למייל הזה, או להגדיר נוסח קבוע בכפתור "אוטומציה".')
+    + ` ההצעה מצורפת כקובץ PDF, ואחרי שליחה הליד עובר ל"${QUOTE_SENT_STATUS}".`;
 }
 // The quote as it is in the boxes now: { title, body }.
 const readQuote = () => ({ title: $('#qTitle').value.trim(), body: $('#qBody').value.replace(/\s+$/, '') });
@@ -2306,7 +2311,7 @@ function openComposer(leadId, kind, status) {
   const p = activePipeline();
   const lead = p && p.leads.find(l => l.id === leadId);
   if (!lead || $('#mailDialog').open) return;
-  mailCtx = { leadId, busy: false, confirming: false, quoteTpl: kind === 'summary' && hasQuote(status) ? status.quoteTemplate : null, sig: { state: 'off' }, sigOn: true, sigLoad: null, sigBusy: false, sigNotice: '' };
+  mailCtx = { leadId, busy: false, confirming: false, quoteTpl: kind === 'summary' ? (status.quoteTemplate || { title: '', body: '' }) : null, sig: { state: 'off' }, sigOn: true, sigLoad: null, sigBusy: false, sigNotice: '' };
   const ready = !!googleClientId();
   const tpl = status.mailTemplate;
   const hasText = !!tpl;
@@ -2880,6 +2885,16 @@ $('#gDelTest').addEventListener('click', googleDeleteTestEvent);
 $('#gClose').addEventListener('click', () => $('#googleDialog').close());
 $('#mailForm').addEventListener('submit', e => { e.preventDefault(); sendMail(); });
 $('#qPreview').addEventListener('click', previewQuote);
+$('#qSample').addEventListener('click', () => {
+  const p = activePipeline();
+  const lead = p && mailCtx && p.leads.find(l => l.id === mailCtx.leadId);
+  if (!lead) return;
+  const q = renderQuote(QUOTE_SAMPLE, lead);
+  $('#qTitle').value = q.title;
+  $('#qBody').value = q.body;
+  $('#qBody').setCustomValidity('');
+  $('#qBody').focus();
+});
 $('#qOn').addEventListener('change', () => {
   $('#qFields').hidden = !$('#qOn').checked;
   if ($('#qOn').checked) $('#qBody').focus();
