@@ -712,7 +712,7 @@ function normalizeMeeting(m) {
     ...m, date: m.date, time: m.time,
     endTime: /^\d{2}:\d{2}$/.test(m.endTime) ? m.endTime : '',
     location: String(m.location ?? ''),
-    guests: (Array.isArray(m.guests) ? m.guests : []).map(String).filter(Boolean),
+    guests: (Array.isArray(m.guests) ? m.guests : []).map(cleanEmail).filter(Boolean),
   };
 }
 // Only touches a pipeline that was never configured (onClose === undefined), so switching it off sticks.
@@ -742,8 +742,8 @@ function normalize(d) {
     const ids = new Set(statuses.map(s => s.id));
     const leads = (p.leads || []).map(l => ({
       ...l, id: l.id || uid(), name: String(l.name ?? ''),
-      phone: String(l.phone ?? ''), email: String(l.email ?? ''), company: String(l.company ?? ''),
-      category: String(l.category ?? ''), website: String(l.website ?? ''),
+      phone: cleanPhone(l.phone), email: cleanEmail(l.email), company: String(l.company ?? ''),
+      category: String(l.category ?? ''), website: cleanPhone(l.website),
       nextFollowUp: /^\d{4}-\d{2}-\d{2}$/.test(l.nextFollowUp) ? l.nextFollowUp : '',
       nextFollowUpTime: /^\d{4}-\d{2}-\d{2}$/.test(l.nextFollowUp) && /^\d{2}:\d{2}$/.test(l.nextFollowUpTime) ? l.nextFollowUpTime : '',
       notes: (Array.isArray(l.notes) ? l.notes : [])
@@ -810,6 +810,12 @@ function safeUrl(raw) {
 
 /* ---- meetings & automation helpers ---- */
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Text copied from a web page or a mail app (especially in Hebrew) often carries invisible direction marks (LRM, RLM,
+// embedding marks, zero-width spaces). They look like nothing but make an email or a phone invalid, so they are removed from
+// the fields where they can never be meant: emails (and any space), phones, websites.
+const cleanInvisible = s => String(s ?? '').replace(/\p{Cf}/gu, '');
+const cleanEmail = s => cleanInvisible(s).replace(/[\s\p{Cc}]+/gu, ''); // also any space or control character: an address never has one
+const cleanPhone = s => cleanInvisible(s).trim();
 const timeToMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
 // End time used when none is entered: start + 30 minutes (may roll over to the next day).
 function defaultEnd(dateIso, time) {
@@ -1273,7 +1279,7 @@ function readMeeting() {
   if (!date || !time) return fail($(date ? '#fMTime' : '#fMDate'), 'יש למלא יום ושעה');
   if (endTime && timeToMin(endTime) <= timeToMin(time)) return fail($('#fMEnd'), 'שעת הסיום חייבת להיות אחרי שעת ההתחלה');
   const seen = new Set();
-  const guests = $('#fMGuests').value.split(/[\s,;]+/).filter(Boolean)
+  const guests = cleanInvisible($('#fMGuests').value).split(/[\s,;]+/).filter(Boolean)
     .filter(g => { const k = g.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
   const bad = guests.find(g => !EMAIL_RE.test(g));
   if (bad) return fail($('#fMGuests'), `כתובת המייל "${bad}" אינה תקינה`);
@@ -1321,9 +1327,9 @@ async function saveLead(opts = {}) {
   // The "continue without an event" button is not a submit, so the form's own checks have to be asked for.
   if (opts.skipCalendar && !$('#leadForm').reportValidity()) return;
   const v = {
-    name: $('#fName').value.trim(), phone: $('#fPhone').value.trim(), email: $('#fEmail').value.trim(),
+    name: $('#fName').value.trim(), phone: cleanPhone($('#fPhone').value), email: cleanEmail($('#fEmail').value),
     company: $('#fCompany').value.trim(), category: $('#fCategory').value.trim(),
-    website: $('#fWebsite').value.trim(), nextFollowUp: $('#fFollow').value,
+    website: cleanPhone($('#fWebsite').value), nextFollowUp: $('#fFollow').value,
     nextFollowUpTime: $('#fFollow').value ? $('#fFollowTime').value : '', // a time without a date means nothing
   };
   // Whitespace-only passes the native "required" check, so blank the field and let the browser flag it.
@@ -1725,7 +1731,7 @@ const base64Lines = s => toBase64(utf8(s)).replace(/.{1,76}/g, '$&\r\n');
 // attachments = [{ name, type, bytes }] makes the whole message multipart/mixed.
 const bytesBase64Lines = bytes => toBase64(bytes).replace(/.{1,76}/g, '$&\r\n');
 function buildMime({ to, subject, text, signature, attachments }) {
-  const list = [].concat(to).map(a => String(a ?? '').trim()).filter(Boolean);
+  const list = [].concat(to).map(cleanEmail).filter(Boolean);
   if (!list.length) throw new GoogleError('address', 'חסר נמען.');
   for (const a of list) if (!EMAIL_RE.test(a) || /[\r\n,<>"]/.test(a)) throw new GoogleError('address', `כתובת המייל "${a}" אינה תקינה.`);
   const sig = signature && signature.html ? signature : null;
@@ -2338,7 +2344,7 @@ async function sendMail() {
   if (!ctx || ctx.busy || ctx.confirming || ctx.sigBusy) return;
   const p = activePipeline();
   const lead = p && p.leads.find(l => l.id === ctx.leadId);
-  const to = $('#mTo').value.trim(), subject = $('#mSubject').value.trim(), body = $('#mBody').value.trim();
+  const to = cleanEmail($('#mTo').value), subject = $('#mSubject').value.trim(), body = $('#mBody').value.trim();
   // Whitespace-only passes the native "required" check, so blank the field and let the browser flag it.
   for (const [value, id] of [[subject, '#mSubject'], [body, '#mBody']]) {
     if (!value) { $(id).value = ''; $(id).reportValidity(); return; }
@@ -2560,7 +2566,10 @@ function composeImportNote(group, main, leadPhone, noContact) {
   return out.join('\n\n');
 }
 function buildImport({ rows, mapping, statuses, defaultStatusId, existing, skipDup, group = false, extras = [] }) {
-  const cell = (r, key) => (mapping[key] === undefined ? '' : String(r[mapping[key]] ?? '').trim());
+  const cell = (r, key) => {
+    const v = mapping[key] === undefined ? '' : String(r[mapping[key]] ?? '').trim();
+    return key === 'email' ? cleanEmail(v) : key === 'phone' || key === 'website' ? cleanPhone(v) : v;
+  };
   const seen = new Set(skipDup ? existing : []);
   const good = [], skipped = [];
   const stats = { missing: 0, dup: 0, badEmail: 0, badDate: 0, unknownStatus: 0, contactsInNotes: 0, groups: 0 };
@@ -3041,6 +3050,22 @@ $('#leadDelete').addEventListener('click', async () => {
   const lead = currentLead();
   if (lead && await deleteLead(lead)) $('#leadDialog').close();
 });
+// Hidden marks are removed the moment they arrive (pasted or typed), keeping the cursor where it was.
+function cleanFieldAsTyped(sel, clean) {
+  $(sel).addEventListener('input', e => {
+    const el = e.target, v = el.value, c = clean(v);
+    if (c === v) return;
+    let at = null;
+    try { at = el.selectionStart; } catch { /* an email box has no cursor position to read */ }
+    el.value = c;
+    if (at !== null) { const keep = clean(v.slice(0, at)).length; try { el.setSelectionRange(keep, keep); } catch { /* not supported here */ } }
+  });
+}
+cleanFieldAsTyped('#fEmail', cleanEmail);
+cleanFieldAsTyped('#mTo', cleanEmail);
+cleanFieldAsTyped('#fPhone', cleanInvisible);
+cleanFieldAsTyped('#fWebsite', cleanInvisible);
+cleanFieldAsTyped('#fMGuests', cleanInvisible);
 $('#fWebsite').addEventListener('input', updateWebsiteLink);
 $('#fStatus').addEventListener('change', syncStatusRule);
 $('#noteAddBtn').addEventListener('click', addNote);
