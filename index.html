@@ -273,6 +273,9 @@
   .tpl-vars .link { padding: 2px 0; }
   .auto-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
   .auto-row > span { flex: 1; overflow-wrap: anywhere; }
+  .auto-timeout { font-size: 13px; color: var(--muted); margin-top: -2px; }
+  .auto-timeout > span { flex: none; }
+  .auto-timeout input { width: 76px; flex: none; }
   .auto-row select { flex: 1.4; min-width: 0; }
   .check { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; cursor: pointer; }
   .check input { width: auto; margin: 4px 0 0; }
@@ -646,6 +649,8 @@ const iconBtn = (glyph, label, onclick, disabled = false) =>
 //          nextFollowUp: 'YYYY-MM-DD' | '', nextFollowUpTime: 'HH:MM' | '', notes: [{ id, text, at }],
 //          statusId, outcome: null | 'failed' | 'closed', createdAt }      (* = required)
 //          meeting: null | { date: 'YYYY-MM-DD', time: 'HH:MM', endTime: 'HH:MM' | '' (empty = 30 min), location, guests: [email] }
+//          statusChangedAt: ms | undefined -> when the lead arrived in its current status (time-based rules count from it;
+//            a lead without one starts counting the first time the rules run).
 //          calendar: { meeting?: CalEvent, follow?: CalEvent }   CalEvent = { id, link, key }: the Google Calendar event made for the
 //            meeting / for the follow-up, and the key (JSON of what was sent) that tells whether it is still up to date.
 // Pipeline.onClose: undefined (never set up) | null (switched off) | { action: 'meeting', targetPipelineId }
@@ -653,6 +658,8 @@ const iconBtn = (glyph, label, onclick, disabled = false) =>
 // Status.onEnter: undefined (never set up) | null (switched off) | { action: 'meeting' | 'followup' | 'email' | 'summary' }
 //   -> dragging a lead into that status opens the action's popup first; the lead only moves once it is confirmed
 //      (meeting, followup). For 'email' and 'summary' the lead moves first and the popup only offers to send an email.
+// Status.onTimeout: undefined (never set up) | null (switched off) | { afterHours, toStatusId }
+//   -> a lead that has been in this status for that many hours moves on its own to the other status (see applyTimeouts).
 // Status.mailTemplate: undefined | { subject, body } -> the default text of that status's email popup. It may hold
 //   fields like {שם פרטי} that are filled from the lead when the popup opens (see TEMPLATE_VARS).
 // Status.quoteTemplate: undefined | { title, body } -> the price quote of a status whose rule is "summary". In that status's
@@ -728,7 +735,24 @@ function autoWireStatusRules(pipelines) {
     if (s && s.onEnter === undefined) s.onEnter = { action: rule.action };
   }
 }
-const autoWire = pipelines => { autoWireMeetings(pipelines); autoWireStatusRules(pipelines); };
+// Time-based moves set up by name, wherever the status was never configured: after `hours` in `status`, a lead goes to `to`.
+const TIMEOUT_RULES = [
+  { pipeline: 'תיאום פגישות V2', status: 'נשלח מייל', hours: 48, to: 'צריך לנסות להתקשר' },
+];
+const sameName = (a, b) => String(a).trim().replace(/\s+/g, ' ').toLowerCase() === String(b).trim().replace(/\s+/g, ' ').toLowerCase();
+function autoWireTimeouts(pipelines) {
+  for (const r of TIMEOUT_RULES) {
+    const p = pipelines.find(x => sameName(x.name, r.pipeline));
+    const s = p && p.statuses.find(x => sameName(x.name, r.status));
+    const to = p && p.statuses.find(x => sameName(x.name, r.to));
+    if (s && to && s !== to && s.onTimeout === undefined) s.onTimeout = { afterHours: r.hours, toStatusId: to.id };
+  }
+}
+const autoWire = pipelines => { autoWireMeetings(pipelines); autoWireStatusRules(pipelines); autoWireTimeouts(pipelines); };
+function normalizeTimeout(t) {
+  const hours = t && typeof t === 'object' ? Math.round(Number(t.afterHours)) : 0;
+  return hours >= 1 && typeof t.toStatusId === 'string' ? { afterHours: Math.min(hours, 8760), toStatusId: t.toStatusId } : null;
+}
 // Spreads keep unknown fields, so data written by a newer version is not dropped on save.
 function normalize(d) {
   const pipelines = d.pipelines.map(p => {
@@ -737,9 +761,12 @@ function normalize(d) {
       onEnter: s.onEnter === undefined ? undefined : (s.onEnter && RULE_ACTIONS[s.onEnter.action] ? { action: s.onEnter.action } : null),
       mailTemplate: normalizeMailTemplate(s.mailTemplate),
       quoteTemplate: normalizeQuoteTemplate(s.quoteTemplate),
+      onTimeout: s.onTimeout === undefined ? undefined : normalizeTimeout(s.onTimeout),
     }));
     if (!statuses.length) statuses.push({ id: uid(), name: DEFAULT_STATUSES[0] });
     const ids = new Set(statuses.map(s => s.id));
+    // A time-based move to a status that is gone (or to itself) is switched off.
+    for (const st of statuses) if (st.onTimeout && (!ids.has(st.onTimeout.toStatusId) || st.onTimeout.toStatusId === st.id)) st.onTimeout = null;
     const leads = (p.leads || []).map(l => ({
       ...l, id: l.id || uid(), name: String(l.name ?? ''),
       phone: cleanPhone(l.phone), email: cleanEmail(l.email), company: String(l.company ?? ''),
@@ -750,6 +777,7 @@ function normalize(d) {
         .filter(n => n && typeof n.text === 'string')
         .map(n => ({ ...n, id: n.id || uid(), at: Number(n.at) || Date.now() })),
       statusId: ids.has(l.statusId) ? l.statusId : statuses[0].id,
+      statusChangedAt: Number(l.statusChangedAt) > 0 ? Number(l.statusChangedAt) : undefined,
       outcome: l.outcome === 'failed' || l.outcome === 'closed' ? l.outcome : null,
       createdAt: l.createdAt || Date.now(),
       meeting: normalizeMeeting(l.meeting),
@@ -786,7 +814,7 @@ function daysAgo(ms) {
 const relDays = ms => { const n = daysAgo(ms); return n === 0 ? 'היום' : n === 1 ? 'אתמול' : `לפני ${n} ימים`; };
 // Notes brought in from a CSV are history, not a contact made today, so they never set "last contact".
 const lastContactAt = lead => {
-  const times = lead.notes.filter(n => !n.imported).map(n => n.at);
+  const times = lead.notes.filter(n => !n.imported && !n.auto).map(n => n.at);
   return times.length ? Math.max(...times) : null;
 };
 function followUpInfo(lead) {
@@ -954,6 +982,8 @@ async function activate(handle, data) {
   render();
   restoreGoogleSession();
   setSaveState('saved');
+  applyTimeouts();
+  startTimeoutTimer();
 }
 
 /* ---- connect screen ---- */
@@ -1059,6 +1089,46 @@ const askConfirm = (title, message, okLabel = 'מחק') => ask({ title, message,
 /* ================= actions ================= */
 function commit() { render(); scheduleSave(); }
 
+/* ---- time-based moves ---- */
+// A status can send a lead on by itself after some hours (Status.onTimeout). This only runs while the CRM is open in
+// Chrome: when it is opened, then every minute, and when the tab comes back to the front. Anything that came due while
+// it was closed moves when it is opened. A lead that has no arrival time yet (saved before this existed) starts counting
+// the first time the rules run. Nothing runs while a window is open or a card is being dragged, so a lead that is being
+// edited is never moved from under the user. The move does not run the target status's own rule.
+const HOUR_MS = 3600000;
+let timeoutTimer = null;
+function applyTimeouts() {
+  if (!state || document.querySelector('dialog[open]') || document.body.classList.contains('dragging')) return 0;
+  const now = Date.now();
+  const moves = [];
+  let stamped = false;
+  for (const p of state.pipelines) {
+    for (const s of p.statuses) {
+      const rule = s.onTimeout;
+      const to = rule && p.statuses.find(x => x.id === rule.toStatusId);
+      if (!to || to === s) continue;
+      for (const lead of p.leads.filter(l => !l.outcome && l.statusId === s.id)) {
+        if (!lead.statusChangedAt) { lead.statusChangedAt = now; stamped = true; continue; }
+        if (now - lead.statusChangedAt < rule.afterHours * HOUR_MS) continue;
+        placeLead(p, lead, to.id, null);
+        lead.notes.push({ id: uid(), text: `הועבר אוטומטית מ"${s.name}" ל"${to.name}": עברו ${rule.afterHours} שעות בסטטוס.`, at: now, auto: true });
+        moves.push({ lead, to });
+      }
+    }
+  }
+  if (moves.length || stamped) commit();
+  if (moves.length) {
+    const names = moves.slice(0, 3).map(m => `${m.lead.name} ← "${m.to.name}"`).join(', ');
+    showToast(`${moves.length === 1 ? 'ליד אחד הועבר' : `${moves.length} לידים הועברו`} אוטומטית: ${names}${moves.length > 3 ? ' ועוד' : ''}`);
+  }
+  return moves.length;
+}
+function startTimeoutTimer() {
+  if (timeoutTimer) return;
+  timeoutTimer = setInterval(applyTimeouts, 60000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) applyTimeouts(); });
+}
+
 async function addPipeline() {
   const name = await askText('פייפ-ליין חדש', '', 'שם הפייפ-ליין');
   if (!name) return;
@@ -1116,8 +1186,9 @@ async function deleteStatus(s) {
   const target = p.statuses.find(x => x !== s);
   const onBoard = p.leads.filter(l => l.statusId === s.id && !l.outcome).length;
   if (onBoard && !(await askConfirm('מחיקת סטטוס', `ב-"${s.name}" יש ${onBoard} לידים. הם יועברו ל-"${target.name}".`, 'מחק סטטוס'))) return;
-  p.leads.forEach(l => { if (l.statusId === s.id) l.statusId = target.id; });
+  p.leads.forEach(l => { if (l.statusId === s.id) { l.statusId = target.id; l.statusChangedAt = Date.now(); } });
   p.statuses = p.statuses.filter(x => x !== s);
+  for (const x of p.statuses) if (x.onTimeout && x.onTimeout.toStatusId === s.id) x.onTimeout = null; // a move to a status that is gone is switched off
   commit();
 }
 
@@ -1301,7 +1372,7 @@ function renderLeadNotes() {
   // Newest first; equal timestamps fall back to insertion order so the latest-added note still comes first.
   const newestFirst = lead.notes.map((n, i) => ({ n, i })).sort((a, b) => b.n.at - a.n.at || b.i - a.i).map(x => x.n);
   $('#notesList').replaceChildren(...newestFirst.map(n => h('div', { class: 'note' },
-    h('div', { class: 'note-head' }, h('span', {}, fmtDateTime(n.at) + (n.imported ? ' · יובאה מ-CSV' : '')), iconBtn('✕', 'מחק הערה', () => deleteNote(n.id))),
+    h('div', { class: 'note-head' }, h('span', {}, fmtDateTime(n.at) + (n.imported ? ' · יובאה מ-CSV' : n.auto ? ' · אוטומטי' : '')), iconBtn('✕', 'מחק הערה', () => deleteNote(n.id))),
     h('div', { class: 'note-text' }, n.text))));
 }
 function addNote() {
@@ -1367,7 +1438,7 @@ async function saveLead(opts = {}) {
     if (meeting) lead.meeting = meeting;
     if (chosen && (lead.outcome || lead.statusId !== chosen)) placeLead(p, lead, chosen, null);
   } else {
-    const created = { id: leadId, ...v, meeting, calendar: {}, notes: [], statusId: chosen || p.statuses[0].id, outcome: null, createdAt: Date.now() };
+    const created = { id: leadId, ...v, meeting, calendar: {}, notes: [], statusId: chosen || p.statuses[0].id, statusChangedAt: Date.now(), outcome: null, createdAt: Date.now() };
     const first = $('#fFirstNote').value.trim();
     if (first) created.notes.push({ id: uid(), text: first, at: Date.now() });
     p.leads.push(created);
@@ -1380,6 +1451,7 @@ async function saveLead(opts = {}) {
   if (move && move.kind === 'close') {
     p.leads = p.leads.filter(l => l !== lead);
     lead.statusId = move.target.statuses[0].id;
+    lead.statusChangedAt = Date.now();
     lead.outcome = null;
     move.target.leads.push(lead);
   } else if (move && move.kind === 'status') {
@@ -1395,6 +1467,7 @@ async function saveLead(opts = {}) {
 }
 // Puts a lead into a status at a position (before another lead, or last) without saving or redrawing.
 function placeLead(p, lead, statusId, beforeId) {
+  if (lead.statusId !== statusId || lead.outcome) lead.statusChangedAt = Date.now(); // re-ordering inside the same status does not restart the clock
   p.leads = p.leads.filter(l => l !== lead);
   lead.statusId = statusId;
   lead.outcome = null;
@@ -1516,10 +1589,21 @@ function openAutomation() {
     const select = h('select', { 'data-status': s.id, 'data-initial': now, 'aria-label': `פעולה בכניסה ל${s.name}` },
       h('option', { value: '', selected: !now }, 'ללא'),
       ...Object.entries(RULE_ACTIONS).map(([value, label]) => h('option', { value, selected: value === now }, label)));
+    // After some hours in this status, the lead moves on to another one by itself.
+    const tmo = s.onTimeout;
+    const hoursBox = h('input', { type: 'number', class: 'to-hours', value: tmo ? tmo.afterHours : 48, 'data-initial': tmo ? String(tmo.afterHours) : '', 'aria-label': `מספר שעות ב${s.name}` });
+    hoursBox.addEventListener('input', () => hoursBox.setCustomValidity(''));
+    const toSelect = h('select', { class: 'to-status', 'data-status': s.id, 'data-initial': tmo ? tmo.toStatusId : '', 'aria-label': `העבר אוטומטית מ${s.name} אל` },
+      h('option', { value: '', selected: !tmo }, 'ללא'),
+      ...p.statuses.filter(x => x !== s).map(x => h('option', { value: x.id, selected: !!tmo && tmo.toStatusId === x.id }, x.name)));
+    const syncHours = () => { hoursBox.disabled = !toSelect.value; }; // no number to fill in while there is no move
+    toSelect.addEventListener('change', syncHours);
+    syncHours();
+    const timeoutRow = h('div', { class: 'auto-row auto-timeout' }, h('span', {}, 'אחרי'), hoursBox, h('span', {}, 'שעות בסטטוס, העבר ל:'), toSelect);
     const editor = buildTemplateEditor(s, MAIL_ACTIONS.has(now));
     const quote = buildQuoteEditor(s, now === 'summary');
     select.addEventListener('change', () => { editor.hidden = !MAIL_ACTIONS.has(select.value); quote.hidden = select.value !== 'summary'; });
-    return h('div', { class: 'auto-item' }, h('div', { class: 'auto-row' }, h('span', {}, s.name), select), editor, quote);
+    return h('div', { class: 'auto-item' }, h('div', { class: 'auto-row' }, h('span', {}, s.name), select), timeoutRow, editor, quote);
   }));
   $('#autoTarget').replaceChildren(...others.map(x => h('option', { value: x.id, selected: !!current && current.target === x }, x.name)));
   $('#autoOn').checked = !!current;
@@ -1538,6 +1622,16 @@ function saveAutomation() {
     const s = p.statuses.find(x => x.id === sel.dataset.status);
     if (s) s.onEnter = sel.value ? { action: sel.value } : null;
   }
+  // Time-based moves: only a row the user changed is written (so untouched ones can still be set up by name).
+  const timeouts = [];
+  for (const sel of document.querySelectorAll('#autoStatuses select.to-status')) {
+    const hoursBox = sel.closest('.auto-timeout').querySelector('.to-hours');
+    const hours = Math.round(Number(hoursBox.value));
+    if (sel.value === sel.dataset.initial && (!sel.value || String(hours) === hoursBox.dataset.initial)) continue;
+    if (sel.value && !(hours >= 1)) { hoursBox.setCustomValidity('מספר שעות, 1 ומעלה'); hoursBox.reportValidity(); return; }
+    timeouts.push([sel.dataset.status, sel.value ? { afterHours: Math.min(hours, 8760), toStatusId: sel.value } : null]);
+  }
+  for (const [id, rule] of timeouts) { const st = p.statuses.find(x => x.id === id); if (st) st.onTimeout = rule; }
   // A default text is saved for every status whose editor is showing (a hidden one is left as it was, so it is not lost).
   for (const editor of document.querySelectorAll('#autoStatuses .auto-tpl')) {
     if (editor.hidden) continue;
@@ -1556,12 +1650,14 @@ function saveAutomation() {
   }
   $('#autoDialog').close();
   commit();
+  applyTimeouts(); // a rule that was just set may already be due
 }
 
 function restoreLead(l) {
   const p = activePipeline();
   if (!p.statuses.some(s => s.id === l.statusId)) l.statusId = p.statuses[0].id;
   l.outcome = null;
+  l.statusChangedAt = Date.now();
   commit();
 }
 
@@ -2615,7 +2711,7 @@ function buildImport({ rows, mapping, statuses, defaultStatusId, existing, skipD
       id: uid(), name, phone, email, company, category: g.map(x => x.category).find(Boolean) || '', website: g.map(x => x.website).find(Boolean) || '',
       nextFollowUp, nextFollowUpTime: '', meeting: null, calendar: {},
       notes: noteText ? [{ id: uid(), text: noteText, at: Date.now(), imported: true }] : [],
-      statusId, outcome: null, createdAt: Date.now(),
+      statusId, statusChangedAt: Date.now(), outcome: null, createdAt: Date.now(),
     });
   }
   return { good, skipped, stats };
