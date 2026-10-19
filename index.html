@@ -92,6 +92,9 @@
   .card.is-dragging { opacity: .35; }
   .card-name { font-weight: 600; overflow-wrap: anywhere; }
   .card-sub { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+  .company-dup { background: var(--fail-soft); color: var(--fail); border-radius: 8px; padding: 8px 10px; font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+  .company-dup.soft { background: var(--accent-soft); color: var(--text); }
+  .company-dup button { font-size: 13px; padding: 4px 10px; }
   .ltr { direction: ltr; unicode-bidi: isolate; display: inline-block; }
   .card-meta {
     display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 6px;
@@ -361,8 +364,16 @@
         <div id="statusHint" class="hint" hidden></div>
       </div>
       <div class="field">
-        <div class="field-head"><label for="fName">שם מלא <span class="req">*</span></label></div>
+        <div class="field-head"><label for="fCompany">חברה</label></div>
+        <input id="fCompany" maxlength="120">
+      </div>
+      <div class="field">
+        <div class="field-head"><label for="fName">איש קשר <span class="req">*</span></label></div>
         <input id="fName" required maxlength="120">
+      </div>
+      <div class="field span-all company-dup" id="companyDup" hidden>
+        <span id="companyDupText"></span>
+        <button type="button" id="companyDupAdd">הוסף כאיש קשר נוסף בהערות של הליד הקיים</button>
       </div>
       <div class="field">
         <div class="field-head"><label for="fPhone">טלפון</label></div>
@@ -371,10 +382,6 @@
       <div class="field">
         <div class="field-head"><label for="fEmail">אימייל</label></div>
         <input id="fEmail" type="email" maxlength="200" dir="auto">
-      </div>
-      <div class="field">
-        <div class="field-head"><label for="fCompany">חברה</label></div>
-        <input id="fCompany" maxlength="120">
       </div>
       <div class="field">
         <div class="field-head"><label for="fCategory">קטגוריה / התמחות</label></div>
@@ -492,7 +499,6 @@
       <select id="impStatus" aria-label="סטטוס ללידים המיובאים"></select>
     </div>
     <label class="check"><input type="checkbox" id="impSkipDup" checked><span>דלג על מספרי טלפון שכבר קיימים בלידים או כפולים בקובץ (ליד בלי טלפון: לפי שם וחברה)</span></label>
-    <label class="check" id="impGroupWrap" hidden><input type="checkbox" id="impGroup" checked><span>קבץ שורות של אותה חברה לליד אחד: איש הקשר הראשון הוא הליד, והאחרים נכנסים להערה</span></label>
     <div id="impSummary" class="imp-summary"></div>
     <div class="imp-preview"><table id="impPreview"></table></div>
     <details id="impMapBox"><summary>התאמת עמודות (לחץ כדי לבדוק או לשנות)</summary><div id="impMap"></div></details>
@@ -842,6 +848,25 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // embedding marks, zero-width spaces). They look like nothing but make an email or a phone invalid, so they are removed from
 // the fields where they can never be meant: emails (and any space), phones, websites.
 const cleanInvisible = s => String(s ?? '').replace(/\p{Cf}/gu, '');
+// One lead per company: companies are compared without case, extra spaces, invisible marks and the different quote marks
+// (בע"מ and בע״מ are the same company).
+const normCompany = c => cleanInvisible(c).toLowerCase().replace(/[\u05f4\u201c\u201d]/g, '"').replace(/[\u05f3\u2018\u2019]/g, "'").replace(/\s+/g, ' ').trim();
+// How a lead is named wherever it is listed: the company first, then the contact.
+const leadLabel = l => (l.company ? `${l.company} · ${l.name}` : l.name);
+const leadWhere = (p, l) => `${p.name} · ${l.outcome ? (l.outcome === 'failed' ? 'נכשל' : 'נסגר') : (p.statuses.find(s => s.id === l.statusId) || {}).name || ''}`;
+// The lead that already holds a company, in any pipeline (also one that is failed or closed), or null.
+function findCompanyLead(company, except) {
+  const k = normCompany(company);
+  if (!k || !state) return null;
+  for (const p of state.pipelines) for (const l of p.leads) if (l !== except && normCompany(l.company) === k) return { lead: l, pipeline: p };
+  return null;
+}
+// Companies that already have more than one lead (from before this rule, or a file edited by hand).
+function duplicateCompanies() {
+  const by = new Map();
+  for (const p of state.pipelines) for (const l of p.leads) { const k = normCompany(l.company); if (k) by.set(k, [...(by.get(k) || []), l]); }
+  return [...by.values()].filter(g => g.length > 1);
+}
 const cleanEmail = s => cleanInvisible(s).replace(/[\s\p{Cc}]+/gu, ''); // also any space or control character: an address never has one
 const cleanPhone = s => cleanInvisible(s).trim();
 const timeToMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
@@ -982,6 +1007,8 @@ async function activate(handle, data) {
   render();
   restoreGoogleSession();
   setSaveState('saved');
+  const dups = duplicateCompanies();
+  if (dups.length) showToast(`${dups.length === 1 ? 'לחברה אחת' : `ל-${dups.length} חברות`} יש יותר מליד אחד: ${dups.slice(0, 3).map(g => g[0].company).join(', ')}${dups.length > 3 ? ' ועוד' : ''}. המערכת לא מחקה ולא איחדה כלום.`);
   applyTimeouts();
   startTimeoutTimer();
 }
@@ -1118,7 +1145,7 @@ function applyTimeouts() {
   }
   if (moves.length || stamped) commit();
   if (moves.length) {
-    const names = moves.slice(0, 3).map(m => `${m.lead.name} ← "${m.to.name}"`).join(', ');
+    const names = moves.slice(0, 3).map(m => `${leadLabel(m.lead)} ← "${m.to.name}"`).join(', ');
     showToast(`${moves.length === 1 ? 'ליד אחד הועבר' : `${moves.length} לידים הועברו`} אוטומטית: ${names}${moves.length > 3 ? ' ועוד' : ''}`);
   }
   return moves.length;
@@ -1193,7 +1220,7 @@ async function deleteStatus(s) {
 }
 
 async function deleteLead(l) {
-  if (!(await askConfirm('מחיקת ליד', `הליד "${l.name}" יימחק. אי אפשר לשחזר.`))) return false;
+  if (!(await askConfirm('מחיקת ליד', `הליד "${leadLabel(l)}" יימחק. אי אפשר לשחזר.`))) return false;
   const p = activePipeline();
   p.leads = p.leads.filter(x => x !== l);
   commit();
@@ -1225,7 +1252,7 @@ function openLead(id, opts = {}) {
     if (st) pendingMove = { kind: 'status', statusId: st.id, beforeId: tr.beforeId, label: `"${st.name}"`, short: `"${st.name}"` };
   }
   meetingMode = !!pendingMove;
-  $('#leadTitle').textContent = meetingMode ? `תיאום פגישה: ${lead.name}` : lead ? (lead.name || 'ליד ללא שם') : 'ליד חדש';
+  $('#leadTitle').textContent = meetingMode ? `תיאום פגישה: ${leadLabel(lead)}` : lead ? (leadLabel(lead) || 'ליד ללא שם') : 'ליד חדש';
   $('#fName').value = lead?.name ?? '';
   $('#fPhone').value = lead?.phone ?? '';
   $('#fEmail').value = lead?.email ?? '';
@@ -1266,8 +1293,9 @@ function openLead(id, opts = {}) {
   $('#categoryList').replaceChildren(...[...cats].sort((a, b) => a.localeCompare(b, 'he')).map(c => h('option', { value: c })));
   updateWebsiteLink();
   renderLeadNotes();
+  syncCompanyDup();
   $('#leadDialog').showModal();
-  (meetingMode ? $('#fMDate') : $('#fName')).focus();
+  (meetingMode ? $('#fMDate') : $('#fCompany')).focus();
 }
 // The rule that applies when the status chosen in the dialog is somewhere the lead is not yet
 // (a new lead, a different status, or coming back from failed / closed).
@@ -1393,6 +1421,40 @@ async function deleteNote(noteId) {
   renderLeadNotes();
   commit();
 }
+// One lead per company. Typing a company that another lead already holds is refused (and says where that lead is). A lead
+// that already shares its company with another one (from before this rule) can still be saved while the company is unchanged.
+function companyDupInfo() {
+  const lead = currentLead();
+  const other = findCompanyLead($('#fCompany').value, lead);
+  if (!other) return null;
+  return { ...other, blocks: !(lead && normCompany(lead.company) === normCompany($('#fCompany').value)) };
+}
+function syncCompanyDup() {
+  const dup = companyDupInfo();
+  $('#companyDup').hidden = !dup;
+  if (!dup) return;
+  const where = `${dup.lead.name}, ${leadWhere(dup.pipeline, dup.lead)}`;
+  $('#companyDup').classList.toggle('soft', !dup.blocks);
+  $('#companyDupText').textContent = dup.blocks
+    ? `יש כבר ליד בחברה הזאת (${where}). ליד אחד לכל חברה: אנשי קשר נוספים נכתבים בהערות שלו.`
+    : `יש עוד ליד באותה חברה (${where}). כדאי להעביר את אנשי הקשר להערות של ליד אחד ולמחוק את השני.`;
+  $('#companyDupAdd').hidden = !dup.blocks || !!currentLead() || meetingMode;
+}
+// The new contact the user typed goes into the notes of the lead that already holds the company, and no lead is created.
+function addContactToExisting() {
+  const dup = companyDupInfo();
+  if (calBusy || !dup || !dup.blocks || currentLead()) return;
+  const name = $('#fName').value.trim();
+  if (!name) { $('#fName').value = ''; $('#fName').reportValidity(); return; }
+  const lines = [`איש קשר נוסף: ${name}`];
+  for (const [label, value] of [['טלפון', cleanPhone($('#fPhone').value)], ['אימייל', cleanEmail($('#fEmail').value)], ['אתר', cleanPhone($('#fWebsite').value)], ['קטגוריה', $('#fCategory').value.trim()]]) if (value) lines.push(`${label}: ${value}`);
+  const first = $('#fFirstNote').value.trim();
+  if (first) lines.push('', first);
+  dup.lead.notes.push({ id: uid(), text: lines.join('\n'), at: Date.now() });
+  $('#leadDialog').close();
+  commit();
+  showToast(`${name} נוסף להערות של "${dup.lead.company}"`, 'הצג', () => { state.activePipelineId = dup.pipeline.id; commit(); openLead(dup.lead.id); });
+}
 async function saveLead(opts = {}) {
   if (calBusy) return;
   // The "continue without an event" button is not a submit, so the form's own checks have to be asked for.
@@ -1405,6 +1467,8 @@ async function saveLead(opts = {}) {
   };
   // Whitespace-only passes the native "required" check, so blank the field and let the browser flag it.
   if (!v.name) { $('#fName').value = ''; $('#fName').reportValidity(); return; }
+  const dup = companyDupInfo();
+  if (dup && dup.blocks) { syncCompanyDup(); $('#fCompany').focus(); return; }
   const lead = currentLead();
   let meeting = null;
   if (!$('#meetingSection').hidden) {
@@ -1460,7 +1524,7 @@ async function saveLead(opts = {}) {
   $('#leadDialog').close();
   commit();
   if (move && move.kind === 'close') {
-    showToast(`הליד "${lead.name}" הועבר ל${move.label}`, `הצג את "${move.target.name}"`,
+    showToast(`הליד "${leadLabel(lead)}" הועבר ל${move.label}`, `הצג את "${move.target.name}"`,
       () => { state.activePipelineId = move.target.id; commit(); });
   }
   if (entering && MAIL_ACTIONS.has(entering.action) && saved) openComposer(saved.id, entering.action, entering.status);
@@ -1500,7 +1564,7 @@ let followPending = null; // { leadId, statusId, beforeId }
 function openFollowUp(lead, status, beforeId) {
   if ($('#followDialog').open || $('#leadDialog').open) return;
   followPending = { leadId: lead.id, statusId: status.id, beforeId };
-  $('#followTitle').textContent = `${status.name}: ${lead.name}`;
+  $('#followTitle').textContent = `${status.name}: ${leadLabel(lead)}`;
   $('#followInfo').textContent = `${lead.phone ? `טלפון: ${lead.phone}. ` : ''}כדי להעביר ל"${status.name}" חובה לקבוע מועד מעקב. ביטול משאיר את הליד במקומו.`;
   $('#fuDate').value = lead.nextFollowUp || '';
   $('#fuTime').value = lead.nextFollowUpTime || '';
@@ -2411,7 +2475,7 @@ function openComposer(leadId, kind, status) {
   const ready = !!googleClientId();
   const tpl = status.mailTemplate;
   const hasText = !!tpl;
-  $('#mailTitle').textContent = `${MAIL_TITLE[kind] || 'מייל'}: ${lead.name}`;
+  $('#mailTitle').textContent = `${MAIL_TITLE[kind] || 'מייל'}: ${leadLabel(lead)}`;
   $('#mailInfo').textContent = `הליד כבר עבר ל"${status.name}". שליחת מייל היא לא חובה: "אל תשלח" משאיר אותו שם בלי לשלוח כלום.`;
   $('#mTo').value = lead.email;
   $('#mSubject').value = hasText ? renderTemplate(tpl.subject, lead) : '';
@@ -2628,7 +2692,6 @@ function autoMap(headers) {
 //    written into the lead's note, together with the columns chosen as `extras` ({ idx, label }).
 //  - a company with no contact name in the file is named after the company. Phone and email are both optional; a lead
 //    without a phone is recognised as a duplicate by name + company.
-const normCompany = c => String(c ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
 const nameKey = (name, company) => `nm:${normCompany(name)}|${normCompany(company)}`;
 const isSameAsAbove = v => /^same as (the )?(row )?above\b/i.test(v);
 // The imported note of a lead: what the file said beyond the lead's own fields. Details that are the same on every row of
@@ -2661,14 +2724,14 @@ function composeImportNote(group, main, leadPhone, noContact) {
   }
   return out.join('\n\n');
 }
-function buildImport({ rows, mapping, statuses, defaultStatusId, existing, skipDup, group = false, extras = [] }) {
+function buildImport({ rows, mapping, statuses, defaultStatusId, existing, existingCompanies = new Map(), skipDup, extras = [] }) {
   const cell = (r, key) => {
     const v = mapping[key] === undefined ? '' : String(r[mapping[key]] ?? '').trim();
     return key === 'email' ? cleanEmail(v) : key === 'phone' || key === 'website' ? cleanPhone(v) : v;
   };
   const seen = new Set(skipDup ? existing : []);
   const good = [], skipped = [];
-  const stats = { missing: 0, dup: 0, badEmail: 0, badDate: 0, unknownStatus: 0, contactsInNotes: 0, groups: 0 };
+  const stats = { missing: 0, dup: 0, dupCompany: 0, badEmail: 0, badDate: 0, unknownStatus: 0, contactsInNotes: 0, groups: 0 };
   const recs = rows.map((r, i) => {
     const note = cell(r, 'notes');
     const extraLines = extras.map(e => [e.label, String(r[e.idx] ?? '').trim()]).filter(l => l[1]);
@@ -2681,7 +2744,7 @@ function buildImport({ rows, mapping, statuses, defaultStatusId, existing, skipD
   });
   const groups = [], byCompany = new Map();
   for (const rec of recs) {
-    const k = group && rec.company ? normCompany(rec.company) : '';
+    const k = rec.company ? normCompany(rec.company) : ''; // one lead per company: rows of a company become one lead
     if (k && byCompany.has(k)) byCompany.get(k).push(rec);
     else { const g = [rec]; groups.push(g); if (k) byCompany.set(k, g); }
   }
@@ -2696,6 +2759,8 @@ function buildImport({ rows, mapping, statuses, defaultStatusId, existing, skipD
       skipped.push({ line: main.line, label: phone || main.email, reason: 'חסר שם' });
       continue;
     }
+    const known = existingCompanies.get(normCompany(company));
+    if (known !== undefined) { stats.dupCompany++; skipped.push({ line: main.line, label: company, reason: `יש כבר ליד בחברה הזאת (${known})` }); continue; }
     const key = phone ? phoneKey(phone) : nameKey(name, company);
     if (skipDup && key && seen.has(key)) { stats.dup++; skipped.push({ line: main.line, label: name, reason: phone ? 'הטלפון כבר קיים או כפול בקובץ' : 'ליד בשם הזה ובחברה הזו כבר קיים' }); continue; }
     if (key) seen.add(key);
@@ -2749,7 +2814,6 @@ async function onImportFile(file) {
   const headers = rows[0].map(x => x.trim());
   imp = { headers, rows: rows.slice(1), result: null,
     extraOff: new Set(headers.map((hd, i) => (EXTRA_OFF_BY_DEFAULT.has(normHeader(hd)) ? i : -1)).filter(i => i >= 0)) }; // extra columns the user has switched off
-  $('#impGroup').checked = true;
   const mapping = autoMap(headers);
   $('#impMap').replaceChildren(...CSV_FIELDS.map(f => h('div', { class: 'auto-row' },
     h('span', {}, f.label + (f.required ? ' *' : '')),
@@ -2776,15 +2840,10 @@ function recomputeImport() {
     summary.className = 'imp-summary warn';
     summary.textContent = 'חובה לבחור עמודה לשם.';
     go.hidden = true; skippedBox.hidden = true;
-    $('#impExtraBox').hidden = true; $('#impNoteBox').hidden = true; $('#impGroupWrap').hidden = true;
+    $('#impExtraBox').hidden = true; $('#impNoteBox').hidden = true;
     $('#impPreview').replaceChildren();
     return;
   }
-  // Grouping is offered when some company appears on more than one row.
-  const companies = mapping.company === undefined ? [] : imp.rows.map(r => normCompany(r[mapping.company])).filter(Boolean);
-  const repeated = new Set(companies).size < companies.length;
-  $('#impGroupWrap').hidden = !repeated;
-  const group = repeated && $('#impGroup').checked;
   // Extra columns for the note.
   const candidates = importExtraColumns(mapping);
   const extraBox = $('#impExtraBox');
@@ -2795,10 +2854,12 @@ function recomputeImport() {
   const extras = candidates.filter(c => !imp.extraOff.has(c.idx)).map(c => ({ idx: c.idx, label: EXTRA_LABELS[normHeader(c.hd)] || c.hd || `עמודה ${c.idx + 1}` }));
   // Known leads, by phone, and by name + company (which is how a lead with no phone in the file is recognised, even if it has a phone now).
   const existing = new Set(state.pipelines.flatMap(x => x.leads.flatMap(l => [l.phone ? phoneKey(l.phone) : '', nameKey(l.name, l.company)])).filter(Boolean));
-  const res = buildImport({ rows: imp.rows, mapping, statuses: p.statuses, defaultStatusId: $('#impStatus').value, existing, skipDup: $('#impSkipDup').checked, group, extras });
+  // Companies that already have a lead, in any pipeline: a row of such a company is never imported (one lead per company).
+  const existingCompanies = new Map(state.pipelines.flatMap(x => x.leads).filter(l => normCompany(l.company)).map(l => [normCompany(l.company), l.name]));
+  const res = buildImport({ rows: imp.rows, mapping, statuses: p.statuses, defaultStatusId: $('#impStatus').value, existing, existingCompanies, skipDup: $('#impSkipDup').checked, extras });
   imp.result = res;
   const st = res.stats;
-  const skippedWhy = [st.missing && `חסר שם: ${st.missing}`, st.dup && `ליד קיים או כפול: ${st.dup}`].filter(Boolean);
+  const skippedWhy = [st.missing && `חסר שם: ${st.missing}`, st.dup && `ליד קיים או כפול: ${st.dup}`, st.dupCompany && `חברה שכבר יש לה ליד: ${st.dupCompany}`].filter(Boolean);
   const cleaned = [st.badEmail && `אימייל לא תקין (נוקה): ${st.badEmail}`, st.badDate && `מועד מעקב לא מזוהה (נוקה): ${st.badDate}`,
     st.unknownStatus && `סטטוס לא מוכר (נכנס לסטטוס שנבחר): ${st.unknownStatus}`].filter(Boolean);
   summary.className = 'imp-summary' + (res.good.length ? '' : ' warn');
@@ -2965,11 +3026,13 @@ function copyButton(text) {
   return btn;
 }
 function renderCard(l) {
-  const sub = [l.company, l.category].filter(Boolean);
+  // The company is the title and the contact comes under it. A lead with no company is titled by its contact.
+  const contact = l.company && normCompany(l.name) !== normCompany(l.company) ? l.name : '';
+  const sub = [contact, l.category].filter(Boolean);
   const fu = followUpInfo(l);
   const last = lastContactAt(l);
   return h('article', { class: 'card', draggable: true, tabindex: 0, 'data-id': l.id },
-    h('div', { class: 'card-name' }, l.name),
+    h('div', { class: 'card-name' }, l.company || l.name),
     sub.length ? h('div', { class: 'card-sub' }, ...sub.flatMap((s, i) => [i ? ' · ' : null, h('bdi', {}, s)])) : null,
     l.phone ? h('div', { class: 'card-sub' }, h('span', { class: 'ltr' }, l.phone), copyButton(l.phone)) : null,
     h('div', { class: 'card-meta' },
@@ -2987,7 +3050,7 @@ function renderArchive() {
     return h('div', { class: `arch-section ${cls}` },
       h('h4', {}, `${title} (${rows.length})`),
       rows.length ? rows.map(l => h('div', { class: 'arch-row' },
-        h('button', { type: 'button', class: 'arch-name', title: 'פתח כרטיס ליד', onclick: () => openLead(l.id) }, l.name),
+        h('button', { type: 'button', class: 'arch-name', title: 'פתח כרטיס ליד', onclick: () => openLead(l.id) }, leadLabel(l)),
         h('button', { type: 'button', onclick: () => restoreLead(l) }, 'החזר ללוח'),
         h('button', { type: 'button', class: 'danger', onclick: () => deleteLead(l) }, 'מחק')))
         : h('div', { class: 'arch-none' }, 'אין'));
@@ -3129,8 +3192,9 @@ $('#importFile').addEventListener('change', e => onImportFile(e.target.files[0])
 $('#importTemplate').addEventListener('click', downloadTemplate);
 $('#impStatus').addEventListener('change', recomputeImport);
 $('#impSkipDup').addEventListener('change', recomputeImport);
-$('#impGroup').addEventListener('change', recomputeImport);
 $('#impGo').addEventListener('click', doImport);
+$('#fCompany').addEventListener('input', syncCompanyDup);
+$('#companyDupAdd').addEventListener('click', addContactToExisting);
 $('#impClose').addEventListener('click', () => $('#importDialog').close());
 // A click on a card opens it; a drag never produces a click, and buttons/links inside keep their own behaviour.
 board.addEventListener('click', e => {
